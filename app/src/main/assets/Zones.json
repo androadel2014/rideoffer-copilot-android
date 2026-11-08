@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "hot": [
+    "Arlington",
+    "Tysons",
+    "Washington, DC",
+    "Washington DC",
+    "Washington D.C.",
+    "Bethesda",
+    "Reagan National Airport",
+    "DCA",
+    "Crystal City",
+    "Rosslyn",
+    "Dupont Circle",
+    "Georgetown",
+    "Downtown DC",
+    "Capitol Hill"
+  ],
+  "neutral": [
+    "Alexandria",
+    "Fairfax",
+    "McLean",
+    "Falls Church",
+    "Vienna",
+    "Silver Spring"
+  ],
+  "dead": [
+    "Culpeper",
+    "Warrenton",
+    "Purcellville",
+    "Front Royal",
+    "Harpers Ferry",
+    "Charles Town",
+    "Fredericksburg",
+    "Stafford",
+    "Winchester"
+  ]
+}

@@ -1,0 +1,5 @@
+Gradle 8.13 official gradle-wrapper.jar SHA-256:
+81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f
+Source: https://gradle.org/release-checksums/
+The official JAR is bootstrapped and checksum-verified by gradlew/gradlew.bat.
+This particular delivered archive does NOT contain the binary JAR (see README).

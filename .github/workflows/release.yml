@@ -1,0 +1,80 @@
+name: Release AAB (signed)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: rideoffer-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: Install SDK platform 36 and build tools
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Set up Gradle 8.13 (for wrapper bootstrap only)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Bootstrap official Gradle wrapper JAR (checksum-verified)
+        run: |
+          set -euo pipefail
+          EXPECTED="81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f"
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            GEN="$(mktemp -d)/gen"
+            mkdir -p "$GEN"
+            (cd "$GEN" && gradle wrapper --gradle-version 8.13 --distribution-type bin)
+            cp "$GEN/gradle/wrapper/gradle-wrapper.jar" gradle/wrapper/gradle-wrapper.jar
+          fi
+          GOT="$(sha256sum gradle/wrapper/gradle-wrapper.jar | awk '{print $1}')"
+          echo "gradle-wrapper.jar SHA-256: $GOT"
+          if [ "$GOT" != "$EXPECTED" ]; then
+            echo "ERROR: wrapper JAR checksum mismatch (expected $EXPECTED)" >&2
+            exit 1
+          fi
+          echo "Wrapper JAR checksum verified against official Gradle 8.13 checksum."
+
+      - name: Decode upload keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload-keystore.jks"
+          ls -l "$RUNNER_TEMP/upload-keystore.jks"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Build signed release AAB
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/upload-keystore.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew :app:bundleRelease --stacktrace
+
+      - name: Upload release AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideOffer-release-AAB
+          path: app/build/outputs/bundle/release/app-release.aab
+          retention-days: 14
