@@ -63,6 +63,15 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # The first run died with "FATAL: Not enough space to create userdata
+      # partition" (6.1 GB free vs 7.4 GB needed): the Gradle home and the
+      # API-36 SDK packages are dead weight once the APK is built.
+      - name: Free disk space for the emulator
+        run: |
+          rm -rf "$HOME/.gradle"
+          sdkmanager --uninstall "platforms;android-36" "build-tools;36.0.0" || true
+          df -h /
+
       - name: Run emulator and capture screenshots
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -72,6 +81,8 @@ jobs:
           profile: pixel_6
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -memory 3072
           disable-animations: true
+          pre-emulator-launch-script: |
+            for f in "$HOME"/.android/avd/*.avd/config.ini; do printf 'disk.dataPartition.size=2048M\n' >> "$f"; done
           script: bash scripts/shots/run.sh
 
       - name: Upload screenshots
