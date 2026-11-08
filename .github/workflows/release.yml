@@ -43,6 +43,7 @@ jobs:
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
             GEN="$(mktemp -d)/gen"
             mkdir -p "$GEN"
+            printf 'rootProject.name = "wrapgen"\n' > "$GEN/settings.gradle.kts"
             (cd "$GEN" && gradle wrapper --gradle-version 8.13 --distribution-type bin)
             cp "$GEN/gradle/wrapper/gradle-wrapper.jar" gradle/wrapper/gradle-wrapper.jar
           fi
