@@ -48,6 +48,11 @@ sleep 2
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell pm clear "$PKG" || true
 
+# `am` cannot attach a ClipData grant to EXTRA_STREAM, so the -f 1 flag alone
+# leaves the app with "no access to content://..." (observed in run 2).
+# Pre-grant the media permission instead; the flag stays as a bonus.
+adb shell pm grant "$PKG" android.permission.READ_MEDIA_IMAGES || true
+
 # Stage the app's own sample offer cards and register them with MediaStore.
 adb push Docs/fixtures/sample-uber-vienna-to-arlington.jpg /sdcard/Pictures/uber-offer.jpg
 adb push Docs/fixtures/sample-lyft-dc-to-nyc-REDACTED.jpg /sdcard/Pictures/lyft-offer.jpg
