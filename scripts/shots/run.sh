@@ -71,9 +71,18 @@ share_via_gallery() {
 
 deliver_offer() {
   # $1 = MediaStore id; try the gallery share sheet, fall back to the intent.
+  # Run 4 evidence: the Photos share DID deliver (uid 10140, ClipData grant,
+  # no SecurityException) but 6s was too short — the first-ever OCR waits on
+  # the ML Kit model download — and the fallback intent then clobbered the
+  # in-flight import with the access-denied error screen. Poll patiently for
+  # the verdict; fall back only on a real error screen or a 90s timeout.
   if share_via_gallery "$1"; then
-    sleep 6
-    if on_verdict; then return 0; fi
+    local i
+    for i in $(seq 1 18); do
+      sleep 5
+      if on_verdict; then return 0; fi
+      if grep -q "Couldn't read this card\|Import failed" /tmp/dump.xml; then break; fi
+    done
   fi
   adb shell am force-stop com.google.android.apps.photos || true
   adb shell am force-stop com.android.gallery3d || true
