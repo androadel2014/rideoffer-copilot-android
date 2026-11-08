@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# v2.0.0 emulator END-TO-END live-watch proof for RideOffer Copilot.
-# Real captures only — nothing staged in the app itself. Method (the
-# builder's own suggested smoke): grant the overlay + notification
-# permissions via adb, start live watch and APPROVE the system
-# MediaProjection consent for "Entire screen", then display the app's own
-# shipped Uber sample card (Docs/fixtures/) full-screen in the gallery.
-# The running service should OCR it, grade it with the v1 engine, show the
-# floating ACCEPT badge (~4.6s), and auto-log it to History. We screencap
-# in a loop to catch the badge, then capture Home feed + History as the
-# durable evidence.
+# v2.0.0 emulator END-TO-END live-watch proof — attempt 2.
+# Attempt 1 (run 42481329497) failed environmentally: the CI emulator's
+# System UI ANR'd ("System UI isn't responding") before the consent dialog
+# could render, so no session ever started. This attempt adds ANR recovery
+# (tap "Wait") at every step and verifies the session is actually ACTIVE
+# (button flips to "Stop live watch") before showing the fixture card.
+# Method unchanged: pre-grant overlay + notifications, approve the system
+# MediaProjection consent ("Entire screen"), display the shipped Uber
+# fixture full-screen; the service should OCR → grade → badge → auto-log.
 set -x
 PKG="com.rideoffercopilot.android"
 OUT="screenshots"
@@ -30,64 +29,79 @@ tap_text() {
   adb shell input tap $coords
 }
 
+dismiss_anr() {
+  dump_ui
+  if grep -q "System UI isn" /tmp/dump.xml; then
+    echo "ANR dialog present; tapping Wait" >> "$DIAG"
+    tap_text "Wait" exact || true
+    sleep 3
+  fi
+}
+
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell dumpsys package "$PKG" | grep -E "versionName|versionCode" >> "$DIAG" || true
-
-# Pre-grant what a user would grant in Settings (overlay badge + notifications)
 adb shell appops set --uid "$PKG" SYSTEM_ALERT_WINDOW allow || true
 adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
-adb shell appops get "$PKG" SYSTEM_ALERT_WINDOW >> "$DIAG" || true
 
-# Push the shipped Uber fixture and register it with MediaStore
 adb push Docs/fixtures/sample-uber-vienna-to-arlington.jpg /sdcard/Pictures/uber-fixture.jpg
 adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/uber-fixture.jpg >/dev/null 2>&1 || true
 sleep 2
 MEDIA_ID=$(adb shell content query --uri content://media/external/images/media --projection _id:_display_name 2>/dev/null | grep "uber-fixture" | grep -o "_id=[0-9]*" | head -1 | cut -d= -f2)
 echo "fixture media id: $MEDIA_ID" >> "$DIAG"
 
-# Launch app, start live watch
 adb shell am force-stop "$PKG" || true
 adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
-sleep 5
+sleep 6
+dismiss_anr
 snap 01-home.png
 
 tap_text "Start live watch" contains
 sleep 3
+dismiss_anr
 dump_ui; cp /tmp/dump.xml "$OUT/debug-consent.xml" || true
-# If the share-scope spinner is on "A single app", switch to "Entire screen"
 if grep -q "A single app" /tmp/dump.xml; then
   tap_text "A single app" contains || true
   sleep 2
   tap_text "Entire screen" contains || true
   sleep 2
 fi
-tap_text "Start now" contains
+tap_text "Start now" contains || true
 sleep 3
-snap 02-after-consent.png
-adb shell dumpsys activity services "$PKG" >> "$DIAG" || true
+dismiss_anr
 
-# Show the Uber offer card full-screen
-adb shell am start -a android.intent.action.VIEW -t image/jpeg -d "content://media/external/images/media/$MEDIA_ID" -f 1
-sleep 5
-# Hide gallery chrome with one center tap
-adb shell input tap 540 1000 || true
-sleep 1
-
-# Capture loop: badge lives ~5s once; detection may wait on ML Kit's
-# first-run model download, so watch for up to ~90 seconds.
-for i in $(seq -w 1 30); do
-  snap "frame-$i.png"
-  sleep 2
+# Verify the session is genuinely active before showing the card
+ACTIVE="no"
+for i in 1 2 3 4 5 6; do
+  dump_ui
+  if grep -q "Stop live watch" /tmp/dump.xml; then ACTIVE="yes"; break; fi
+  sleep 4
 done
+echo "live session active: $ACTIVE" >> "$DIAG"
+adb shell dumpsys activity services "$PKG" 2>/dev/null | grep -A2 "LiveWatchService" >> "$DIAG" || true
+snap 02-after-consent.png
 
-# Back to the app: Home recent feed + History are the durable proof
+if [ "$ACTIVE" = "yes" ]; then
+  adb shell am start -a android.intent.action.VIEW -t image/jpeg -d "content://media/external/images/media/$MEDIA_ID" -f 1
+  sleep 6
+  dismiss_anr
+  adb shell input tap 540 1000 || true
+  sleep 1
+  for i in $(seq -w 1 30); do
+    snap "frame-$i.png"
+    sleep 2
+    if [ "$i" = "10" ] || [ "$i" = "20" ]; then dismiss_anr; fi
+  done
+fi
+
+dismiss_anr
 adb shell am start -n "$PKG/.MainActivity"
 sleep 3
+dismiss_anr
 snap 10-home-after.png
 tap_text "History" exact || tap_text "History" contains
 sleep 2
 snap 11-history-after.png
 dump_ui; cp /tmp/dump.xml "$OUT/debug-history.xml" || true
 
-echo "e2e capture done" >> "$DIAG"
+echo "e2e attempt 2 done" >> "$DIAG"
 ls -l "$OUT" >> "$DIAG" || true
