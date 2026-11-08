@@ -41,5 +41,16 @@ fun main(args: Array<String>) {
     check(ZoneMatcher.classify("Stafford",ZoneConfig(1,listOf("Stafford"),emptyList(),listOf("Stafford")))=="dead")
     check(ZoneMatcher.classify("Washington DC",ZoneConfig(1,listOf("Washington"),listOf("Washington DC"),emptyList()))=="neutral")
     check(ZoneMatcher.classify("no place",zones)=="neutral")
-    println("PASS: 3 parser fixtures, both calibration math, dead zone, thresholds, privacy, zones")
+    val uLines=ocr("uber-transcript.txt")
+    val lLines=ocr("lyft-transcript.txt")
+    check(LiveOfferGate.looksLikeOffer(uLines) && LiveOfferGate.looksLikeOffer(lLines))
+    check(!LiveOfferGate.looksLikeOffer(listOf(OcrLine("Uber",0),OcrLine("9 min",20),OcrLine("$42",30))))
+    val filter=LiveOfferDedup()
+    check(filter.shouldLog(u,1000L))
+    check(!filter.shouldLog(u,3000L))
+    repeat(3){ filter.onNoOffer() }
+    check(!filter.shouldLog(u,8000L))
+    check(filter.shouldLog(u,100_000L))
+    check(filter.shouldLog(u.copy(fare=50.0),101_000L))
+    println("PASS: original calibration, 3 parser fixtures, zones, privacy, live detection + dedup")
 }

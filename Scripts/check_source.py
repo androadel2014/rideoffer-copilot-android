@@ -17,14 +17,26 @@ assert 'kotlinOptions {' not in app
 assert '1.12.' not in app
 assert 'android.intent.action.SEND' in manifest and 'image/*' in manifest
 assert 'android.permission.INTERNET' in manifest
-for forbidden in ('ACCESS_FINE_LOCATION','ACCESS_COARSE_LOCATION','READ_EXTERNAL_STORAGE','MANAGE_EXTERNAL_STORAGE','SYSTEM_ALERT_WINDOW','BIND_ACCESSIBILITY_SERVICE'):
+for permission in ('FOREGROUND_SERVICE_MEDIA_PROJECTION','FOREGROUND_SERVICE','SYSTEM_ALERT_WINDOW','POST_NOTIFICATIONS'):
+    assert permission in manifest,permission
+assert 'android:foregroundServiceType="mediaProjection"' in manifest
+assert 'android:name=".LiveWatchService"' in manifest
+assert 'versionCode = 2' in app and 'versionName = "2.0.0"' in app
+assert 'applicationId = "com.rideoffercopilot.android"' in app
+for forbidden in ('ACCESS_FINE_LOCATION','ACCESS_COARSE_LOCATION','READ_EXTERNAL_STORAGE','MANAGE_EXTERNAL_STORAGE','BIND_ACCESSIBILITY_SERVICE'):
     assert forbidden not in manifest
 assert 'if(!settings.syncEnabled)' in source or 'if (!settings.syncEnabled)' in source
 assert 'if(!prefs.load().syncEnabled)' in source
 assert 'TextRecognition.getClient' in source
+for term in ('MediaProjectionManager','createScreenCaptureIntent','FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION',
+             'registerCallback','createVirtualDisplay','acquireLatestImage','LiveOfferDedup',
+             'POST_NOTIFICATIONS','Settings.canDrawOverlays','ACTION_STOP','Overlay'):
+    assert term in source, term
+assert 'AccessibilityService' not in source
 assert 'CardPrivacy.sanitize' in source
 assert 'AES/GCM/NoPadding' in source
 for file in ('app/src/test/java/com/rideoffercopilot/android/DomainTests.kt',
+             'app/src/test/java/com/rideoffercopilot/android/LiveWatchTests.kt',
              'app/src/test/resources/uber-transcript.txt','app/src/test/resources/lyft-transcript.txt',
              'gradlew','gradlew.bat','gradle/wrapper/gradle-wrapper.properties'):
     assert (root/file).is_file(),file
@@ -38,4 +50,4 @@ if jar.exists():
     assert hashlib.sha256(jar.read_bytes()).hexdigest()==expected,'Official wrapper JAR checksum failed'
 else:
     print('LIMITATION: official wrapper JAR not shipped; gradlew and gradlew.bat fetch/check it on first build.')
-print('PASS: pinned Gradle/AGP/Kotlin/Compose/ML Kit, manifest, privacy, zones, source structure')
+print('PASS: v2 pinned stack, capture permissions, foreground service, privacy, live detection, source structure')

@@ -1,17 +1,11 @@
 #!/usr/bin/env bash
-# One-off Play Store screenshot capture for RideOffer Copilot.
+# v2.0.0 emulator smoke capture for RideOffer Copilot (Live Watch).
 # Runs on the CI host with adb connected to a booted emulator.
 # Captures the REAL app UI via screencap — nothing is staged or fabricated.
-# The two graded verdicts come from feeding the app its own shipped sample
-# offer cards (Docs/fixtures/) through its real import paths, exactly as a
-# user sharing a screenshot into the app would.
-#
-# History: runs 2-3 reached Home/History/Settings but the share-intent import
-# was denied by MediaProvider ("<pkg> has no access to content://media/...")
-# even with READ_MEDIA_IMAGES pre-granted. This run adds full diagnostics
-# (dumpsys grant state, provider query output, logcat) and tries the real
-# Gallery share-sheet route first — a real share attaches a proper ClipData
-# URI grant, which `am` cannot forge for EXTRA_STREAM.
+# Scope: install the CI-built debug APK, open Home (which carries the live
+# watch permissions explanation), tap "Start live watch" to surface the
+# system MediaProjection consent dialog (captured, then CANCELLED — no real
+# capture session is approved), then History and Settings.
 set -x
 PKG="com.rideoffercopilot.android"
 OUT="screenshots"
@@ -19,7 +13,7 @@ mkdir -p "$OUT"
 DIAG="$OUT/diagnostics.txt"
 : > "$DIAG"
 
-diag() { echo "=== $* ===" >> "$DIAG"; }
+snap() { adb exec-out screencap -p > "$OUT/$1"; }
 
 dump_ui() {
   adb shell uiautomator dump /sdcard/dump.xml >/dev/null 2>&1 || true
@@ -34,160 +28,45 @@ tap_text() {
   adb shell input tap $coords
 }
 
-snap() { adb exec-out screencap -p > "$OUT/$1"; }
-
-media_id() {
-  # $1 = display name of a pushed image; prints its MediaStore _id (or nothing)
-  adb shell content query --uri content://media/external/images/media \
-    --projection _id:_display_name 2>/dev/null \
-    | grep "$1" | grep -o "_id=[0-9]*" | head -1 | cut -d= -f2
-}
-
-on_verdict() {
-  dump_ui
-  grep -q "Mark accepted\|Mark declined" /tmp/dump.xml
-}
-
-send_offer() {
-  # $1 = MediaStore id; fallback delivery via forged ACTION_SEND intent
-  adb shell am start -n "$PKG/.MainActivity" \
-    -a android.intent.action.SEND -t image/jpeg \
-    --eu android.intent.extra.STREAM "content://media/external/images/media/$1" \
-    -f 1
-}
-
-share_via_gallery() {
-  # $1 = MediaStore id; open the card in the gallery app, then use its real
-  # Share sheet so the system attaches a genuine ClipData URI grant.
-  # Run 5: the Uber share worked, the Lyft share flaked — Photos was still
-  # running with the previous photo/share state. Force a fresh Photos for
-  # every card, and give the share sheet one scroll-and-retry.
-  adb shell am force-stop com.google.android.apps.photos || true
-  adb shell am force-stop com.android.gallery3d || true
-  sleep 1
-  adb shell am start -a android.intent.action.VIEW -t image/jpeg \
-    -d "content://media/external/images/media/$1" -f 1 >/dev/null 2>&1 || return 1
-  sleep 6
-  tap_text "Share" contains || return 1
-  sleep 3
-  if ! tap_text "RideOffer Copilot" contains; then
-    dump_ui
-    cp /tmp/dump.xml "$OUT/debug-share-sheet.xml" || true
-    adb shell input swipe 540 1500 540 700 300 || true
-    sleep 2
-    tap_text "RideOffer Copilot" contains || return 1
-  fi
-  sleep 2
-  return 0
-}
-
-deliver_offer() {
-  # $1 = MediaStore id; try the gallery share sheet, fall back to the intent.
-  # Run 4 evidence: the Photos share DID deliver (uid 10140, ClipData grant,
-  # no SecurityException) but 6s was too short — the first-ever OCR waits on
-  # the ML Kit model download — and the fallback intent then clobbered the
-  # in-flight import with the access-denied error screen. Poll patiently for
-  # the verdict; fall back only on a real error screen or a 90s timeout.
-  if share_via_gallery "$1"; then
-    local i
-    for i in $(seq 1 18); do
-      sleep 5
-      if on_verdict; then return 0; fi
-      if grep -q "Couldn't read this card\|Import failed" /tmp/dump.xml; then break; fi
-    done
-  fi
-  adb shell am force-stop com.google.android.apps.photos || true
-  adb shell am force-stop com.android.gallery3d || true
-  send_offer "$1"
-  sleep 14
-}
-
-adb wait-for-device
-# Portrait phone resolution for Play screenshots.
-adb shell wm size 1080x1920 || true
-sleep 2
-
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell pm clear "$PKG" || true
+adb shell dumpsys package "$PKG" | grep -E "versionName|versionCode" >> "$DIAG" || true
+adb shell am force-stop "$PKG" || true
+adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
+sleep 5
 
-# Pre-grant the media permission; the intent grant flag stays as a bonus.
-adb shell pm grant "$PKG" android.permission.READ_MEDIA_IMAGES || true
-diag "pm grant state"
-adb shell dumpsys package "$PKG" 2>/dev/null | grep -i -A1 -B1 "READ_MEDIA\|READ_EXTERNAL" >> "$DIAG" || true
-
-# Stage the app's own sample offer cards and register them with MediaStore.
-adb push Docs/fixtures/sample-uber-vienna-to-arlington.jpg /sdcard/Pictures/uber-offer.jpg
-adb push Docs/fixtures/sample-lyft-dc-to-nyc-REDACTED.jpg /sdcard/Pictures/lyft-offer.jpg
-diag "pushed files"
-adb shell ls -l /sdcard/Pictures/ >> "$DIAG" 2>&1 || true
-adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/uber-offer.jpg || true
-adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/lyft-offer.jpg || true
-adb shell content call --uri content://media --method scan_volume --arg external_primary >> "$DIAG" 2>&1 || true
-sleep 3
-# Fallback registration if the scan did not index the files.
-if [ -z "$(media_id uber-offer.jpg)" ]; then
-  adb shell content insert --uri content://media/external/images/media \
-    --bind _data:s:/sdcard/Pictures/uber-offer.jpg --bind title:s:uber-offer >> "$DIAG" 2>&1 || true
-fi
-if [ -z "$(media_id lyft-offer.jpg)" ]; then
-  adb shell content insert --uri content://media/external/images/media \
-    --bind _data:s:/sdcard/Pictures/lyft-offer.jpg --bind title:s:lyft-offer >> "$DIAG" 2>&1 || true
-fi
-sleep 2
-diag "media query (full)"
-adb shell content query --uri content://media/external/images/media \
-  --projection _id:_display_name >> "$DIAG" 2>&1 || true
-
-adb logcat -c || true
-
-# 1) Home / Copilot screen — the app's default screen.
-adb shell am start -n "$PKG/.MainActivity"
-sleep 8
+# Home: live-watch explanation + Start live watch
 snap 01-home.png
+dump_ui; cp /tmp/dump.xml "$OUT/debug-home.xml" || true
 
-# 2) Uber sample card -> verdict screen (GREEN "ACCEPT" expected).
-UBER_ID=$(media_id uber-offer.jpg)
-echo "Uber media id: ${UBER_ID:-NONE}"
-if [ -n "$UBER_ID" ]; then
-  deliver_offer "$UBER_ID"
+# Scroll Home to reveal Recent feed + manual import section, then back up
+adb shell input swipe 540 1600 540 600 300; sleep 1
+snap 01b-home-scrolled.png
+adb shell input swipe 540 600 540 1600 300; sleep 1
+
+# Start live watch -> a system dialog is expected (notification permission
+# prompt on API 33+, and/or the MediaProjection consent dialog). Capture
+# whatever genuinely appears, save its UI dump, then cancel with Back.
+if tap_text "Start live watch" contains; then
+  sleep 3
+  snap 02-live-consent.png
+  dump_ui; cp /tmp/dump.xml "$OUT/debug-consent.xml" || true
+  adb shell input keyevent 4; sleep 1
+  # If a second stacked dialog was behind the first, capture + cancel it too.
+  snap 02b-live-consent-2.png
+  dump_ui; cp /tmp/dump.xml "$OUT/debug-consent-2.xml" || true
+  adb shell input keyevent 4; sleep 1
 fi
-snap 02-verdict-uber.png
+snap 02c-after-consent-cancel.png
 
-# Mark accepted -> lands on History with the logged offer. If the import
-# failed instead, the error screen's button returns to Home.
-if ! tap_text "Mark accepted" contains; then
-  tap_text "Try another image" contains || true
-fi
-sleep 3
-
-# 3) History screen (real logged offer after step 2; empty state otherwise).
-tap_text "History" exact || true
-sleep 3
+# History tab
+tap_text "History" exact || tap_text "History" contains
+sleep 2
 snap 03-history.png
 
-# 4) Lyft sample card -> verdict screen (RED "DECLINE / LONG TRIP" expected).
-tap_text "Home" exact || true
+# Settings tab
+tap_text "Settings" exact || tap_text "Settings" contains
 sleep 2
-LYFT_ID=$(media_id lyft-offer.jpg)
-echo "Lyft media id: ${LYFT_ID:-NONE}"
-if [ -n "$LYFT_ID" ]; then
-  deliver_offer "$LYFT_ID"
-fi
-snap 04-verdict-lyft.png
+snap 04-settings.png
 
-# 5) Settings screen.
-if ! tap_text "Mark declined" contains; then
-  tap_text "Try another image" contains || true
-fi
-sleep 3
-tap_text "Settings" exact || true
-sleep 3
-snap 05-settings.png
-
-diag "logcat (RideOffer / access denials)"
-adb logcat -d 2>/dev/null | grep -i "rideoffer\|no access\|SecurityException" | tail -40 >> "$DIAG" || true
-adb logcat -d > "$OUT/logcat.txt" 2>/dev/null || true
-
-dump_ui
-cp /tmp/dump.xml "$OUT/debug-final-dump.xml" || true
-ls -la "$OUT"
+echo "smoke capture done" >> "$DIAG"
+ls -l "$OUT" >> "$DIAG" || true

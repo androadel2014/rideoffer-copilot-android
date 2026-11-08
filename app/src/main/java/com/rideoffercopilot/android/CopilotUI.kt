@@ -1,6 +1,14 @@
 package com.rideoffercopilot.android
 
 import android.net.Uri
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionManager
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -44,6 +52,42 @@ fun MaterialCopilot(sharedImage: Uri?, onConsumed: () -> Unit) {
     val speaker= remember {VoiceSpeaker(context)}
     DisposableEffect(speaker) {onDispose {speaker.shutdown()}}
     LaunchedEffect(Unit) {controller.refresh();controller.syncOnOpen()}
+    LaunchedEffect(LiveWatchState.count) {if (LiveWatchState.count > 0) controller.refresh()}
+    val projectionConsent = rememberLauncherForActivityResult(StartActivityForResult()) { result ->
+        val grant = result.data
+        if (result.resultCode == Activity.RESULT_OK && grant != null) {
+            val command = Intent(context, LiveWatchService::class.java).apply {
+                action = LiveWatchService.ACTION_START
+                putExtra(LiveWatchService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(LiveWatchService.EXTRA_CAPTURE_DATA, grant)
+            }
+            try { context.startForegroundService(command) }
+            catch (e: Exception) { LiveWatchState.stopped("Could not start: ${e.message}") }
+        } else LiveWatchState.stopped("Screen capture consent declined")
+    }
+    val launchConsent: () -> Unit = {
+        try {
+            val manager = context.getSystemService(MediaProjectionManager::class.java)
+            projectionConsent.launch(manager.createScreenCaptureIntent())
+        } catch (e: Exception) { LiveWatchState.stopped("Screen capture unavailable: ${e.message}") }
+    }
+    val notificationsConsent = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+        // Denial does not block projection; it limits heads-up verdict notification fallback.
+        launchConsent()
+    }
+    val startLive: () -> Unit = {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            notificationsConsent.launch(Manifest.permission.POST_NOTIFICATIONS)
+        else launchConsent()
+    }
+    val stopLive: () -> Unit = {
+        context.startService(Intent(context, LiveWatchService::class.java).apply {action = LiveWatchService.ACTION_STOP})
+    }
+    val overlaySettings: () -> Unit = {
+        context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:${context.packageName}")))
+    }
     LaunchedEffect(sharedImage) {
         if(sharedImage!=null) {controller.importImage(context,sharedImage);onConsumed()}
     }
@@ -65,13 +109,15 @@ fun MaterialCopilot(sharedImage: Uri?, onConsumed: () -> Unit) {
         Scaffold(bottomBar={
             if(controller.page!="verdict" && controller.page!="error") NavigationBar {
                 for((key,label) in listOf("home" to "Home","history" to "History","settings" to "Settings")) {
-                    NavigationBarItem(selected=controller.page==key,onClick={controller.page=key},icon={Text(when(key){"home"->"⌂";"history"->"≡";else->"⚙"},fontSize=23.sp)},label={Text(label)})
+                    NavigationBarItem(selected=controller.page==key,onClick={if(key=="history")controller.refresh(); controller.page=key},icon={Text(when(key){"home"->"⌂";"history"->"≡";else->"⚙"},fontSize=23.sp)},label={Text(label)})
                 }
             }
         }) { padding ->
             Box(Modifier.padding(padding).fillMaxSize()) {
                 when(controller.page) {
-                    "home" -> HomeScreen(controller) {uri->scope.launch {controller.importImage(context,uri)}}
+                    "home" -> HomeScreen(controller,
+                        import={uri->scope.launch {controller.importImage(context,uri)}},
+                        startLive=startLive, stopLive=stopLive, openOverlaySettings=overlaySettings)
                     "verdict" -> controller.currentOffer?.let { VerdictScreen(it,controller) {speaker.speak("${it.verdict.uppercase()}! ${money(it.netDollarsPerMile)} per mile, ${money(it.netDollarsPerHour)} per hour. ${it.reasons}")} }
                     "history" -> HistoryScreen(controller)
                     "settings" -> SettingsScreen(controller) {scope.launch {controller.sync()}}
@@ -83,22 +129,65 @@ fun MaterialCopilot(sharedImage: Uri?, onConsumed: () -> Unit) {
 }
 
 @Composable
-private fun HomeScreen(controller: RideController, import: (Uri)->Unit) {
+private fun HomeScreen(
+    controller: RideController,
+    import: (Uri)->Unit,
+    startLive: ()->Unit,
+    stopLive: ()->Unit,
+    openOverlaySettings: ()->Unit
+) {
+    val context = LocalContext.current
     val picker=rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) {uri ->if(uri!=null)import(uri)}
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(20.dp)) {
+    val active = LiveWatchState.running
+    val overlayAllowed = remember(LiveWatchState.permissionRevision) { Settings.canDrawOverlays(context) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        verticalArrangement=Arrangement.spacedBy(14.dp)) {
         Text("RideOffer Copilot",style=MaterialTheme.typography.headlineLarge,fontWeight=FontWeight.Bold)
-        Text("Your private Uber + Lyft screenshot analyzer",style=MaterialTheme.typography.bodyLarge)
-        Spacer(Modifier.height(22.dp))
-        Button(onClick={picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))},
-            modifier=Modifier.fillMaxWidth().height(76.dp), enabled=!controller.busy) {
-            Text(if(controller.busy)"Reading screenshot…" else "Import offer screenshot",fontSize=19.sp)
+        Text("Live Uber + Lyft offer monitor",style=MaterialTheme.typography.bodyLarge)
+        Text("Android will ask to share your screen every time you start. Choose ENTIRE SCREEN to watch Uber and Lyft. Capture stays on this phone.",
+            color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Button(onClick=if(active)stopLive else startLive,modifier=Modifier.fillMaxWidth().height(74.dp)) {
+            Text(if(active) "Stop live watch" else "Start live watch",fontSize=21.sp)
         }
-        Text("Or open a screenshot in Gallery → Share → RideOffer Copilot.",color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Status: ${LiveWatchState.status}",color=if(active)green else MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("While watching, a persistent notification offers STOP. The screen must remain on. Offers are auto-logged once.",
+            style=MaterialTheme.typography.bodySmall)
         HorizontalDivider()
-        Text("How it works",style=MaterialTheme.typography.titleLarge)
-        Text("1. Take a screenshot of an Uber or Lyft offer.\n2. Share it here or pick it from Gallery.\n3. Review the NET verdict and mark your decision.\n4. Review or export everything in History.")
-        Text("All OCR runs on your phone. Screenshots aren't saved here. Sync is off unless you enable it.",color=MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("${controller.offers.size} offers logged",style=MaterialTheme.typography.titleMedium)
+        Text("Floating verdict (optional)",style=MaterialTheme.typography.titleMedium)
+        Text(if (overlayAllowed) "Floating badge permission is enabled. A short top-of-screen badge appears on detection."
+             else "Allow 'Display over other apps' for a 5-second dismissible top badge. If denied, verdict alerts use notifications and the live feed.")
+        if (!overlayAllowed) OutlinedButton(onClick=openOverlaySettings) {Text("Allow floating badge (optional)")}
+        Text("Notifications: Android 13+ asks separately. If notifications are blocked, fallback verdict alerts may not appear.",
+            style=MaterialTheme.typography.bodySmall)
+        LiveWatchState.lastOffer?.let { offer ->
+            HorizontalDivider()
+            Text("Latest live offer",style=MaterialTheme.typography.titleLarge)
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                    Text(if(offer.verdict=="green")"ACCEPT" else "SKIP",fontSize=32.sp,
+                        fontWeight=FontWeight.Bold,color=if(offer.verdict=="green")green else red)
+                    Text("${offer.platform} · ${money(offer.fare)} · NET ${money(offer.netDollarsPerMile)}/mi · ${money(offer.netDollarsPerHour)}/hr")
+                    Text(offer.reasons,style=MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick={controller.currentOfferFromLive(offer)}) {Text("View full verdict")}
+                }
+            }
+        }
+        if (active && controller.offers.isNotEmpty()) {
+            Text("Recent feed",style=MaterialTheme.typography.titleMedium)
+            for (offer in controller.offers.take(4)) {
+                Text("${date(offer.timestamp)} · ${offer.platform} · ${if(offer.verdict=="green")"ACCEPT" else "SKIP"} · ${money(offer.netDollarsPerMile)}/mi")
+            }
+        }
+        HorizontalDivider()
+        Text("Grade a screenshot (manual)",style=MaterialTheme.typography.titleMedium)
+        OutlinedButton(onClick={picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))},
+            modifier=Modifier.fillMaxWidth(),enabled=!controller.busy) {
+            Text(if(controller.busy) "Reading screenshot…" else "Import offer screenshot")
+        }
+        Text("Or Gallery → Share → RideOffer Copilot. Images are processed in memory, not saved.",
+            color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Sync stays OFF unless you enable it in Settings. No ads, analytics, or login.",
+            style=MaterialTheme.typography.bodySmall)
         if(controller.busy) CircularProgressIndicator()
     }
 }

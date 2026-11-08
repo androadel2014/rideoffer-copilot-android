@@ -1,71 +1,99 @@
-# RideOffer Copilot — Android personal trial (source only)
+# RideOffer Copilot Android v2.0.0 — LIVE WATCH (source project)
 
-Kotlin / Jetpack Compose, single activity, English-only UI, no ads or accounts. Target: Samsung Galaxy S25 Ultra running Android 8+ (API 26+). This is a **screenshot-based manual import** companion, not a live capture, screen overlay, notification listener, or automatic driver.
+**Personal Samsung Galaxy S25 Ultra trial.** Kotlin + Jetpack Compose, English-only UI. No ads, accounts, analytics, Accessibility service, automatic tapping, or store publishing. Main experience: **start a consented LIVE screen-watch session**, switch to Uber/Lyft, automatically recognize offers and see a short verdict badge. Manual screenshot import from v1 remains available.
 
-## What is implemented
+> **Build status: SOURCE ONLY.** This project was not assembled into an APK with Android Gradle Plugin in the authoring environment; there is no Android SDK or Gradle here. Pure Kotlin smoke tests and source checks were executed, but MediaProjection, ML Kit on actual frames, overlays, notifications, battery behavior, UI compilation and Samsung installation were **not** device-tested. CI/Android Studio must verify them. See `Docs/RESULTS.md`.
 
-- Home: large **Import offer screenshot** system photo picker and Android share-sheet `ACTION_SEND image/*` receiver. The app reads a granted image URI in memory and does **not save** the screenshot.
-- Bundled, on-device Latin ML Kit OCR followed by one full-card pattern parser; extracts fare, pickup/trip legs, ratings, included bonus and surge multiplier, addresses. Rejects cards without a positive fare and trip distance/duration. Uber total-leg duplication is removed.
-- Original iOS v1.1.1 net-grading rules: pickup included, empty return for trip distance >=75mi, dead-zone reposition penalties, cost-per-mile subtraction, green/yellow/red thresholds. **Thresholds and costs are PROVISIONAL** until actual trip calibration.
-- Verdict: large ACCEPT / BORDERLINE / DECLINE, metrics and reasons, Android TextToSpeech (English), manual accepted/declined/discard actions. No automated Uber/Lyft interaction.
-- History: local SQLite, complete offer detail including **allow-listed redacted OCR text**, CSV/JSON offers and waits exports via Android's Save Document picker, delete-all confirmation.
-- Settings: all requested numeric boundaries, driver ID, voice + Uber/Lyft flags, optional HTTPS sync URL and key, OFF-by-default sync switch, Sync now and last-status. Driver key is AES/GCM encrypted with a nonexportable Android Keystore key.
-- Wait record **model and SQLite table** exist. No automatic wait tracking is performed by this screenshot trial, and the waits list initially remains empty.
-- Zones.json is copied **verbatim** from iOS v1.1.1; it is a bundled, non-UI-editable configuration. Longest word-boundary keyword wins; dead wins ties.
+## Live workflow (on the phone)
 
-## EXACT build versions (fixed)
+1. Install the debug APK and launch **RideOffer Copilot**. The Home page explains the permissions and displays **Start live watch**.
+2. Optional but recommended: tap **Allow floating badge**. Android opens **Display over other apps** settings; grant permission for RideOffer Copilot and go back. Without this, the app uses verdict notifications and Home's recent-offer feed.
+3. Tap **Start live watch**. On Android 13+, allow notifications if prompted (needed for heads-up verdict notifications; denying does not block capture). Android then displays its official screen-capture consent dialog. **Select “Entire screen” (rather than a single app)** and approve. Android requires fresh consent for **every** new session.
+4. Switch to Uber or Lyft, go online, and keep the screen on. The app's foreground service receives shared-screen frames, checks roughly every **2 seconds**, and runs **bundled on-device ML Kit OCR** on the bottom ~66% of the screen. OCR is reattempted periodically even if a coarse frame hash is unchanged.
+5. When a likely offer card is readable (app cue + fare + a leg with both miles and minutes), it is parsed, graded on the original v1 NET rules, and **logged automatically** once per unique offer. A green **ACCEPT** or red **SKIP** badge shows NET $/mi and NET $/hr near the **TOP** for ~5 seconds and can be dismissed by tapping it. **YELLOW/BORDERLINE is displayed as SKIP** on this glanceable live badge; the recorded color/verdict remains yellow. With overlay permission denied, the app attempts a heads-up notification instead. Home shows the latest offer and recent feed.
+6. Stop safely using **Stop** in the persistent foreground-service notification (or **Stop live watch** in Home). Stopping releases the projection, image buffers, recognizer, overlays, and TTS. A fresh permission prompt is needed to start again.
+7. You can still choose **Grade a screenshot (manual)** or share an image from Samsung Gallery → Share → RideOffer Copilot. It uses the original v1 parser, Verdict, History, and Settings.
 
-| Component | Version |
+**Safety:** This is a read-only decision aid. It never accepts or rejects an Uber/Lyft ride for you and never touches their app. It can misread an offer, skip an offer, or show a late result; do not interact with the screen while driving. Verify important details when safely parked. The cost/threshold values are **PROVISIONAL**, not calibrated profitability advice.
+
+## Permissions (AndroidManifest.xml)
+
+| Permission | Purpose | Consent / consequence |
+|---|---|---|
+| `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_MEDIA_PROJECTION` | Keep a visible, user-stoppable screen capture session alive | Android requires typed foreground service for Android 14+; **only launched following foreground user consent** |
+| MediaProjection screen share | Receive screen frames; *no separate dangerous manifest permission* | **System prompt every session**; user must select **Entire screen** to follow Uber and Lyft across apps. Android system privacy indicator appears |
+| `SYSTEM_ALERT_WINDOW` | Short, dismissible floating verdict badge | **Optional** special access, requested via Android's Settings screen; without it, notification + in-app feed fallback |
+| `POST_NOTIFICATIONS` | Fallback offer alerts, plus visibility/control on supported versions | Runtime permission on Android 13+; denied notifications may prevent heads-up offer alerts; Home still has status and Stop |
+| `INTERNET` | **Only** manually enabled HTTPS sync module | Sync OFF by default; service never executes the application's sync code |
+
+**Not requested:** location, photo library/storage access, accessibility service, notification listener, microphone, boot-on-start, contacts, camera, or automated touch control. MediaProjection may be blocked by Android or another app's protected-content settings (`FLAG_SECURE`). On some Android versions/share dialogs the user may be offered a single-app share option; selecting only RideOffer Copilot will NOT watch Uber/Lyft.
+
+## How detection works / limits
+
+- `LiveWatchService.kt`: foreground service (`mediaProjection` type), notification with Stop action, **one** MediaProjection → **one** virtual display per consent; resize uses `VirtualDisplay.resize()` and `.setSurface()`. Capture resolution capped at 1080 px wide; `ImageReader` frames decoded in memory, cropped to the bottom 66%, throttled ~2 seconds, image processing single-flight. No saved screenshots. Pauses OCR when the display is off.
+- `LiveOfferGate.kt`: app-specific offer cues (UberX/Match or Lyft/Accept/Incl.), a dollar amount, and a combined distance/time leg. Rejects ordinary maps/screens that do not have these cues.
+- `OfferParser.kt` (unchanged v1): extracts the largest leading fare (ignoring Lyft hourly-rate), pickup, trip, included bonus, rating, and address-like dropoff/pickup; sanitizes OCR text with `CardPrivacy` allow-list. The engine rejects invalid/implausible offers. **It can still produce false positives / false negatives**; no live frame from a Samsung has been calibrated yet.
+- `LiveOfferDedup.kt`: numeric/address fingerprint with a 90s cooldown to avoid logging the same offer repeated across OCR frames or transient screen flickers. A changed fare/trip fingerprint logs immediately. Two offers with indistinguishable details inside 90 seconds may be treated as one; if OCR changes a number significantly, duplicates are possible.
+- `LiveOverlay.kt`: overlay near top (72 dp from top), not near the bottom Accept button. Auto-fade at ~4.6s, tap to dismiss; uses a window type allowed for user-approved overlays. If permission denied/revoked, high-priority verdict notifications are used when notifications are allowed.
+- `LiveWatchState.kt`: in-process UI state for status/feed. `OfferDatabase` remains the durable source of truth. Live scanning and logging run in the **foreground service**; **sync runs only in main UI** and only if enabled.
+
+**Latency / battery:** Capture is sampled about every two seconds, plus ML Kit OCR latency, so the verdict is **not instantaneous**. ML Kit and a screen-capture foreground service consume battery; do not assume they are free to run for a long shift until measured on the actual Galaxy. Android screen-off skips analysis; session remains active until Stop/system revocation; Android may stop capture at any time.
+
+## Unchanged grading and data
+
+Exact v1 rule: pickup miles/minutes included; if one-way **trip miles >= 75**, assume empty return of the same miles/minutes. For keyword-matched **dead-zone dropoff**, add **8 miles / 25 minutes**, stacking with long return. Effective distance/time are used for operating cost ($0.20/mile default) and NET grading. RED if net$/mile < 0.90 **OR** net$/hour < 20. GREEN if net$/mile >= 1.25 **AND** net$/hour >= 30 **AND** pickup complete; otherwise YELLOW. Defaults are editable in Settings and explicitly provisional; **no math or threshold code was changed from v1**.
+
+| Reference transcript | NET $/mile | NET $/hour | Stored verdict | Live badge |
+|---|---:|---:|---|---|
+| UberX Vienna → Arlington, $41.87 (includes +$18) | **3.31849** | **74.04375** | **GREEN** | **ACCEPT** |
+| Lyft Comfort DC → NYC, $449 incl $50; 464.7 effective miles / 543 minutes | **0.76622** | **39.34** | **RED** | **SKIP** |
+
+Each recognized offer is saved immediately in existing local SQLite table `offers` with platform/time/fare/legs/NET costs/verdict/address-like text/redacted OCR. Older v1 records are preserved (same database/schema/application ID). History detail, CSV/JSON export, manual outcome buttons, wait table, zones asset, voice switch, and optional sync contract remain unchanged. No new wait tracking was added. The driver may mark outcomes later from the History/Ver­dict screens; live capture never infers acceptance.
+
+### Privacy and network
+
+- **No images are persisted** or sent to any server; image memory is recycled. Stored `rawText` is produced by `CardPrivacy.sanitize`, stripping isolated and grouped name-like lines such as `Josh` and `Josh Verified ★4.8`; `pickupText`/`dropoffText` come only from address-looking lines. This is a rules-based sanitizer and **cannot guarantee** that a rider name mistakenly recognized as part of an address never survives. Review before enabling sync.
+- **Sync defaults OFF**, and `SyncService` exits before URL/network code when disabled. The capture service has **no networking calls**. Enabling sync in Settings uploads redacted records to your configured HTTPS endpoint, as described in the v1 README/`Docs/RESULTS.md`. There is no automatic background sync.
+- Google's ML Kit can transmit independent SDK diagnostics/usage telemetry according to its terms even when app sync is OFF; the OCR image itself stays on device. Absolute zero third-party SDK networking cannot be promised. See <https://developers.google.com/ml-kit/terms>.
+
+## Pinned build stack
+
+| Item | Exact value |
 |---|---|
-| Gradle distribution | **8.13** |
-| Android Gradle Plugin | **8.13.2** |
-| Kotlin Android + Compose compiler plugin | **2.3.10** |
+| Gradle wrapper distribution | **8.13** |
+| AGP | **8.13.2** |
+| Kotlin Android / Compose Compiler plugin | **2.3.10** |
 | compileSdk / targetSdk / minSdk | **36 / 36 / 26** |
 | Compose BOM | **2025.09.01** |
-| `androidx.activity:activity-compose` | **1.11.0** |
-| `com.google.mlkit:text-recognition` (bundled) | **16.0.1** |
-| `org.jetbrains.kotlinx:kotlinx-coroutines-android` | **1.10.2** |
-| Android application ID | **com.rideoffercopilot.android** |
-| App versionName / versionCode | **1.0.0 / 1** |
+| activity-compose | **1.11.0** |
+| bundled ML Kit Latin text-recognition | **16.0.1** |
+| Kotlin coroutines android | **1.10.2** |
+| applicationId | **com.rideoffercopilot.android** |
+| versionName / versionCode | **2.0.0 / 2** |
+| Kotlin compiler target | `kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }` |
 
-Uses the required `kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }` DSL. No `kotlinOptions` or Compose 1.12.x. No broad photo storage, overlays, accessibility, or location permissions. Only INTERNET for the optional sync feature.
+No additional runtime libraries were added. Signing config was **not altered** from the v1 project (debug builds use standard Android debug signing; no paid service needed).
 
-## Build a debug APK yourself (Windows, Android Studio)
+## Build Windows or CI (source only)
 
-1. Extract `RideOfferCopilot-Android` from the ZIP. Install Android Studio, JDK 17 and Android SDK Platform 36/Build Tools 36.0.0 if not already present.
-2. Open the folder containing `settings.gradle.kts` in Android Studio. Let the IDE sync Gradle; it needs internet **for Gradle/plugins/dependencies** the first time.
-3. Use **Build → Build Bundle(s) / APK(s) → Build APK(s)**, or in a Windows terminal in this folder:
+1. Extract the ZIP; open folder `RideOfferCopilot-Android` containing `settings.gradle.kts` in Android Studio. Install JDK **17**, Android SDK Platform **36** and Build Tools **36.0.0**; initial dependency download requires internet.
+2. Windows terminal in project root:
    ```bat
    gradlew.bat :app:testDebugUnitTest :app:assembleDebug
    ```
-4. A successful build generates `app\build\outputs\apk\debug\app-debug.apk`. **No prebuilt APK is supplied or claimed**.
-5. Transfer the debug APK to the S25 Ultra and tap the file to install (allow “Install unknown apps” for the chosen file manager if Android asks). Or enable USB debugging and run `adb install -r app\build\outputs\apk\debug\app-debug.apk`.
-6. Open the app, leave sync OFF, set thresholds and operating cost, import one of your own screenshots using the picker or from Samsung Gallery → Share → RideOffer Copilot. Verify all extracted amounts before acting. Use “Mark accepted/declined” or “Not an offer / wrong parse”.
-7. Optional: enable sync only after the server endpoint has been tested, set HTTPS URL + driver key, press Save, then Sync now.
+   On macOS/Linux: `./gradlew :app:testDebugUnitTest :app:assembleDebug`. For source-only local checks run `python3 Scripts/check_source.py` or `./Scripts/run-core-smoke.sh` (needs `kotlinc`).
+3. If the Gradle build succeeds, the unsigned-by-you **debug-signed** APK will be at `app/build/outputs/apk/debug/app-debug.apk`. Copy to Samsung and allow unknown-app installation or use `adb install -r app/build/outputs/apk/debug/app-debug.apk`. **No APK is included in this ZIP.**
+4. CI: push project root to GitHub → **Actions → Android debug build → Run workflow**. The existing `.github/workflows/android-debug.yml` verifies source, runs JUnit and assembles APK, then uploads an artifact if successful. No paid Google Play or Apple account required.
+5. For a smoke test, start live watch, allow **Entire screen**, switch to a static test screenshot on the phone (e.g. Gallery viewing the provided fixture), and verify one detection plus no duplicate after several frames; then test real Uber/Lyft offers only while safely parked. Test notification Stop, overlay denial, battery and long shift separately.
 
-**Important wrapper binary limitation:** This environment had no internet access to retrieve the official `gradle-wrapper.jar`. To avoid shipping an unverified or counterfeit binary, this ZIP contains `gradlew`, `gradlew.bat`, `gradle-wrapper.properties`, and the official Gradle 8.13 SHA-256. The wrapper properties also pin the Gradle 8.13 binary distribution SHA-256. On **first invocation**, the scripts download the *official* Gradle 8.13 wrapper JAR from Gradle's distribution service and verify its published checksum `81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f`; if verification fails, they stop. Thus **the requested prebundled official JAR is not present in this archive**; this limitation is not a claim of full compliance. After the first successful bootstrap the official JAR is stored in `gradle/wrapper/`. If your CI requires a prebundled JAR, fetch and commit the checksum-verified official file separately before the build.
+**Gradle wrapper limitation inherited from v1:** The authoring environment could not obtain the official `gradle-wrapper.jar`; it is **NOT bundled**. `gradlew` / `gradlew.bat` download the official Gradle 8.13 wrapper JAR on first run, verify SHA-256 `81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f`, then launch Gradle. The distribution itself has pinned SHA-256 in `gradle-wrapper.properties`. First CI/Android Studio build requires access to Gradle's download service; **build success is not guaranteed until tested**.
 
-### Alternative GitHub Actions build
+## Verification
 
-The included `.github/workflows/android-debug.yml` configures JDK 17, Android SDK 36, runs checks and `:app:testDebugUnitTest :app:assembleDebug`, and uploads the generated APK as an artifact. Upload the project root to a GitHub repo, open **Actions → Android debug build → Run workflow**, and inspect the build log. **Workflow has not been executed from this environment.**
+- `Scripts/check_source.py` — pinned versions, v2 foreground-service/permission declarations, networking/QA invariants.
+- `Scripts/run-core-smoke.sh` — offline Kotlin logic: original Uber/Lyft numbers, bonus, privacy, zone/long-trip, detection gate, consecutive-frame dedup + changed offer. Transcribed OCR fixtures only.
+- `app/src/test/.../DomainTests.kt` — **9 existing JUnit tests, unchanged**.
+- `app/src/test/.../LiveWatchTests.kt` — **5 new JUnit tests** for offer gate, normal screens rejection, repeated-card dedup, changed offers and reset.
+- `Docs/RESULTS.md` — exact test execution, what remains untested and acceptance checklist for Kiko.
 
-## Data, privacy and networking
-
-- Screenshots are decoded in memory, passed to the **bundled** ML Kit text recognizer, then recycled. This feature requires no network upload.
-- **SDK-level network caveat:** ML Kit documents that although image/text input remains on-device, its SDK can make independent requests for metrics, bug fixes, and compatibility information. With sync OFF, **our own app code** does not open any network connections, but we cannot guarantee the ML Kit library performs zero requests. This is an inherent conflict between the required ML Kit dependency and a strict app-wide zero-networking promise. See https://developers.google.com/ml-kit/terms .
-- The OCR sanitizer is a *positive allow-list* based on `CardOCRPrivacy.sanitize` from the iOS source, tightened to reject bare name-like street-suffix text without address context. It drops isolated rider names and cuts unknown prefixes before `Verified`, `rating`, ★/☆ when the line is not an address/amount/leg; other lines only survive if they look like money, duration/distance, a known label, a rating, or a street/place address. All saved and synced `rawText`/`raw_text` are re-sanitized. `pickupText`/`dropoffText` are address-looking text only. **Heuristics cannot mathematically guarantee removal of a name embedded in an address-like line**; review before enabling sync.
-- Offers and waits are local SQLite (`rideoffer.db`). Offers fields use the iOS `OfferRecord` property names; the sync service serializes the separately specified snake_case contract. `timestamp` and `started_at` columns are Unix **milliseconds** stored as `REAL`, ISO8601 UTC only for network/CSV.
-- App-owned network logic **never** invokes `HttpURLConnection` while sync is OFF. Both the UI trigger and the network service independently read the OFF-by-default setting before any network call. Synchronization is **foreground-only**, on opening the app (if enabled) or tapping Sync now; no background service, WorkManager, or network call from OCR.
-- POST `{base}/api/rideoffer/v1/ingest`, `X-Driver-Key` from encrypted preferences; at most 200 combined offers/waits per batch; HTTP 200 with `accepted == size` required to mark exactly unchanged documents `synced_at`, 401 and all other failures retain queue, 20s connect/read timeouts. When driver ID changes, records are sent in same-driver-ID batches.
-- Changing the sync toggle OFF while a network request is already in flight does **not** physically cancel that previously authorized HTTP request; no **new** batch starts. Do not enable sync if you never want the already queued data sent.
-- `waits` are not generated automatically in the Android trial, but their table/export/payload support is implemented. No remote response or server test is claimed.
-
-## Tests, fixture images, known limits
-
-- `Scripts/check_source.py` verifies pinned versions, permissions, zones, sanitization/sync guards and wrapper configuration.
-- `Scripts/run-core-smoke.sh` compiles/runs **pure Kotlin** model, parser and decision logic with `kotlinc` and Java. No SDK needed. It uses **transcribed text fixtures** rather than actual ML Kit output.
-- `app/src/test/.../DomainTests.kt` contains 9 JUnit tests for the two supplied cards, rearranged layout, summaries, bonuses, zones, long threshold, missing pickup, privacy, sync payload explicit nulls/outcome mapping, invalid settings. Execute with `:app:testDebugUnitTest` when Android SDK/Gradle are available.
-- `Docs/fixtures/` includes the two **real screenshot references**; the rider-name area in the Lyft picture has been covered before bundling. Those fixture JPEGs are **documentation only**, not app assets, local user history, or exported records.
-- Limitations: no Android SDK / Gradle available here; **no Gradle/AGP build, JUnit Gradle run, APK install, phone ML Kit OCR, photo picker, TTS, or sync-server integration test was performed**. Text-level parser math was run and passed. Test the screenshots on the S25 Ultra before relying on a verdict; screenshot formats and OCR errors can change.
-
-See [`Docs/RESULTS.md`](Docs/RESULTS.md) for audited checks and handoff to Kiko.
+**Official Android platform reference:** <https://developer.android.com/media/grow/media-projection> and <https://developer.android.com/develop/background-work/services/fgs/service-types>.

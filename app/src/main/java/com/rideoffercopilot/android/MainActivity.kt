@@ -27,6 +27,10 @@ class MainActivity : ComponentActivity() {
         pendingUri=sharedUri(intent)
         setContent { MaterialCopilot(pendingUri, onConsumed={pendingUri=null}) }
     }
+    override fun onResume() {
+        super.onResume()
+        LiveWatchState.refreshPermissions()
+    }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -79,6 +83,7 @@ class RideController(context: android.content.Context) {
     var settingsError by mutableStateOf("")
         private set
     fun refresh() {offers=database.offers();waits=database.waits()}
+    fun currentOfferFromLive(offer: OfferRecord) {currentOffer=offer;page="verdict"}
     fun showError(message: String) { error=message; page="error" }
     fun saveSettings(proposed: DriverSettings, newKey: String): Boolean {
         if(!proposed.valid()) {settingsError="Invalid values. Green must be ≥ red; all values must be finite and nonnegative; driver ID 1–128 chars.";return false}

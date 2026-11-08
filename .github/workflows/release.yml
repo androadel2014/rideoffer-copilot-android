@@ -73,6 +73,11 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew :app:bundleRelease --stacktrace
 
+      - name: Verify AAB version (bundletool)
+        run: |
+          curl -sL -o /tmp/bundletool.jar https://github.com/google/bundletool/releases/download/1.17.2/bundletool-all-1.17.2.jar
+          java -jar /tmp/bundletool.jar dump manifest --bundle=app/build/outputs/bundle/release/app-release.aab --module=base | grep -E "versionCode|versionName|package" | head -5
+
       - name: Upload release AAB
         uses: actions/upload-artifact@v4
         with:
