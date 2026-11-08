@@ -58,6 +58,7 @@ class LiveWatchService : Service() {
     private lateinit var db: OfferDatabase
     private lateinit var zones: ZoneConfig
     private lateinit var power: PowerManager
+    private lateinit var sourceApps: SourceAppResolver
 
     override fun onCreate() {
         super.onCreate()
@@ -65,6 +66,7 @@ class LiveWatchService : Service() {
         db = OfferDatabase(this)
         zones = ZoneConfigLoader.load(this)
         power = getSystemService(POWER_SERVICE) as PowerManager
+        sourceApps = SourceAppResolver(this)
         overlay = LiveOverlay(this)
         createChannels()
     }
@@ -165,16 +167,14 @@ class LiveWatchService : Service() {
             try { padded.copyPixelsFromBuffer(buffer) } catch (_: Exception) { padded.recycle();return }
             val visible = Bitmap.createBitmap(padded,0,0,image.width,image.height)
             padded.recycle()
-            // Uber/Lyft offer cards are bottom sheets: do not run OCR on the top navigation/map.
-            val cropTop = (visible.height * 0.34f).toInt()
-            val card = Bitmap.createBitmap(visible,0,cropTop,visible.width,visible.height-cropTop)
-            visible.recycle()
-            val maxDim = maxOf(card.width,card.height)
+            // Any-app cards may be at TOP, CENTRE or BOTTOM. OCR the full frame, then
+            // isolate an offer-sized window around each fare anchor inside the pure parser.
+            val maxDim = maxOf(visible.width, visible.height)
             val resized = if (maxDim > 1900) {
                 val ratio = 1900.0/maxDim
-                Bitmap.createScaledBitmap(card,(card.width*ratio).toInt().coerceAtLeast(1),
-                    (card.height*ratio).toInt().coerceAtLeast(1),true).also {card.recycle()}
-            } else card
+                Bitmap.createScaledBitmap(visible,(visible.width*ratio).toInt().coerceAtLeast(1),
+                    (visible.height*ratio).toInt().coerceAtLeast(1),true).also {visible.recycle()}
+            } else visible
             val hash = frameHash(resized)
             // Force a periodic OCR refresh even if the coarse hash misses small text changes.
             if (lastFrameHash == hash && now - lastOcrAt < 8000L) {resized.recycle();return}
@@ -188,14 +188,14 @@ class LiveWatchService : Service() {
                         val bounds=line.boundingBox ?: return@mapNotNull null
                         OcrLine(line.text,bounds.top,bounds.height(),bounds.left)
                     }}
-                    analyze(lines)
+                    analyze(lines,resized.height)
                 }
                 .addOnFailureListener { dedup.onNoOffer() }
                 .addOnCompleteListener { resized.recycle();busy.set(false) }
         } finally {image.close()}
     }
 
-    /** Cheap coarse frame fingerprint. OCR only when the lower card area changes. */
+    /** Cheap coarse frame fingerprint. OCR only when the full visible frame changes. */
     private fun frameHash(bitmap: Bitmap): Long {
         var hash = 1125899906842597L
         for (row in 0 until 12) for (col in 0 until 10) {
@@ -207,28 +207,43 @@ class LiveWatchService : Service() {
         return hash
     }
 
-    private fun analyze(lines: List<OcrLine>) {
+    private fun analyze(lines: List<OcrLine>, frameHeight: Int) {
         if (stopping.get()) return
         if (!LiveOfferGate.looksLikeOffer(lines)) { dedup.onNoOffer(); return }
-        val candidate = OfferParser.scan(lines) ?: run {dedup.onNoOffer();return}
-        val settings = prefs.load()
-        if ((candidate.platform=="Uber" && !settings.uberEnabled) ||
-            (candidate.platform=="Lyft" && !settings.lyftEnabled)) {dedup.onNoOffer();return}
-        val graded = DecisionEngine.decide(candidate, settings, zones) ?: run {dedup.onNoOffer();return}
-        if (!dedup.shouldLog(candidate,SystemClock.elapsedRealtime())) return
+        // Usage Access is optional; absent permission we store the honest label "Unknown app".
+        // A screenshot alone cannot certify which package owns its contents.
+        val pkg=sourceApps.currentPackage()
+        val platform=sourceApps.nameOf(pkg)
+        val detected=UniversalOfferDetector.detect(lines,sourceLabel=platform,sourcePackage=pkg,frameHeight=frameHeight)
+            ?: run {dedup.onNoOffer();return}
+        val settings=prefs.load()
+        val brand=SourceAppNames.knownName(pkg) ?: UniversalOfferDetector.brandOf(lines)
+        if ((brand=="Uber" && !settings.uberEnabled) ||
+            (brand=="Lyft" && !settings.lyftEnabled)) {dedup.onNoOffer();return}
+        val graded=detected.candidate?.let {DecisionEngine.decide(it,settings,zones)}
+            ?: detected.partial?.let {PartialDeliveryGrader.grade(it,settings,zones)}
+            ?: run {dedup.onNoOffer();return}
+        if (!dedup.shouldLog(detected.fingerprintCandidate(),SystemClock.elapsedRealtime())) return
         try {
-            // OfferParser already applies CardPrivacy.sanitize; never persist bitmap bytes.
+            // Images are NEVER saved. Raw text is allow-list sanitized in both parser and JsonCodec.
             db.addOffer(graded)
-        } catch (_: Exception) { LiveWatchState.stopped("Couldn't save offer; restart live watch"); stopWatch("Storage error");return }
+        } catch (_: Exception) { stopWatch("Couldn't save offer; restart live watch");return }
         LiveWatchState.found(graded)
         if (settings.voiceEnabled) {
-            if (speaker == null) speaker = VoiceSpeaker(this)
-            speaker?.speak("${if(graded.verdict=="green") "Accept" else "Skip"}. " +
-                String.format(Locale.US,"Net %.2f dollars per mile, %.2f dollars per hour. ", graded.netDollarsPerMile,graded.netDollarsPerHour) +
-                (if(graded.longTripReturnMiles!=null && graded.longTripReturnMiles>0) "Long trip, empty return. " else "") +
-                (if(graded.zoneTier=="dead") "Dead-zone dropoff." else ""))
+            if (speaker == null) speaker=VoiceSpeaker(this)
+            val label=VerdictBadgeStyle.forVerdict(graded.verdict).title
+            speaker?.speak(if (graded.metricMode=="full_trip") {
+                "$label. " + String.format(Locale.US,
+                    "Net %.2f dollars per mile, %.2f dollars per hour. ", graded.netDollarsPerMile,graded.netDollarsPerHour) +
+                    (if (graded.longTripReturnMiles!=null && graded.longTripReturnMiles>0) "Long trip, empty return. " else "") +
+                    (if (graded.zoneTier=="dead") "Dead-zone dropoff." else "")
+            } else {
+                "$label. ${String.format(Locale.US,"%.2f",graded.fare)} dollars per delivery. " +
+                    (graded.grossHourlyEstimate?.let {String.format(Locale.US,"Gross %.2f per hour estimated, NOT net. ",it)} ?: "") +
+                    "Missing trip data; verify the original offer."
+            })
         }
-        if (overlay?.show(graded) != true) postVerdictNotification(graded)
+        if (overlay?.show(graded)!=true) postVerdictNotification(graded)
     }
 
     private fun createChannels() {
@@ -248,7 +263,7 @@ class LiveWatchService : Service() {
         return Notification.Builder(this,SERVICE_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentTitle("RideOffer · Live watch active")
-            .setContentText("Watching for Uber/Lyft offer cards · tap Stop to end")
+            .setContentText("Watching for work offers · tap Stop to end")
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(Notification.Action.Builder(android.R.drawable.ic_media_pause,"Stop",stop).build())
@@ -258,8 +273,12 @@ class LiveWatchService : Service() {
     private fun postVerdictNotification(record: OfferRecord) {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val open = PendingIntent.getActivity(this,20,Intent(this,MainActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val title = if (record.verdict=="green") "ACCEPT · ${record.platform}" else "SKIP · ${record.platform}"
-        val message = String.format(Locale.US, "NET $%.2f/mi · $%.2f/hr. %s",record.netDollarsPerMile,record.netDollarsPerHour,record.reasons)
+        val title = "${VerdictBadgeStyle.forVerdict(record.verdict).title} · ${record.platform}"
+        val message = if (record.metricMode=="full_trip")
+            String.format(Locale.US, "NET $%.2f/mi · $%.2f/hr. %s",record.netDollarsPerMile,record.netDollarsPerHour,record.reasons)
+        else String.format(Locale.US,"$%.2f per delivery%s. %s",record.fare,
+            record.grossHourlyEstimate?.let {String.format(Locale.US," · $%.2f/hr gross est",it)} ?: "",
+            record.reasons)
         try {
             val notification = Notification.Builder(this,VERDICT_CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)

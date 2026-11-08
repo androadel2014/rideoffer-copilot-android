@@ -18,7 +18,7 @@ object LiveWatchState {
     var count by mutableStateOf(0)
         private set
 
-    fun started() { running = true; status = "Watching for Uber / Lyft offers"; count = 0; lastOffer = null }
+    fun started() { running = true; status = "Watching for offers in any work app"; count = 0; lastOffer = null }
     fun found(offer: OfferRecord) { lastOffer = offer; count++; status = "Watching · $count offer(s) captured" }
     fun stopped(reason: String = "Not watching") { running = false; status = reason }
 }

@@ -53,7 +53,11 @@ data class OfferRecord(
     val driverID: String, val zoneTier: String,
     val deadZoneRepositionMiles: Double? = null, val deadZoneRepositionMinutes: Double? = null,
     val longTripReturnMiles: Double? = null, val longTripReturnMinutes: Double? = null,
-    val effectiveMiles: Double? = null, val effectiveMinutes: Double? = null
+    val effectiveMiles: Double? = null, val effectiveMinutes: Double? = null,
+    /** full_trip or incomplete delivery, with null-safe serialization of missing metrics. */
+    val metricMode: String = "full_trip",
+    val hasTripMiles: Boolean = true, val hasTripMinutes: Boolean = true,
+    val grossHourlyEstimate: Double? = null
 ) {
     val totalMiles: Double get() = tripMiles + (pickupMiles ?: 0.0)
     val totalMinutes: Double get() = tripMinutes + (pickupMinutes ?: 0.0)

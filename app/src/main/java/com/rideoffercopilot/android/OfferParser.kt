@@ -10,6 +10,7 @@ object CardPrivacy {
     private val rating = Regex("[★☆]\\s*[1-5](?:\\.\\d+)?|\\b(?:rating|verified)\\b\\s*[★☆]?\\s*[1-5](?:\\.\\d+)?", RegexOption.IGNORE_CASE)
     private val marker = Regex("\\b(?:verified|rating)\\b|[★☆]", RegexOption.IGNORE_CASE)
     private val milesMin = Regex("\\bmi(?:les)?\\b|\\bmin\\b", RegexOption.IGNORE_CASE)
+    private val labelThenPossibleName = Regex("^(?:pick\\s*up|drop\\s*off|uber(?:x|xl| green| comfort)?|lyft|comfort|extra comfort|match|accept|request)\\b",RegexOption.IGNORE_CASE)
 
     fun looksLikeAddress(value: String): Boolean {
         val t = value.trim()
@@ -32,6 +33,12 @@ object CardPrivacy {
             if (hit != null && hit.range.first > 0 && !looksLikeAddress(t) &&
                 !t.contains('$') && !milesMin.containsMatchIn(t)) {
                 t = t.substring(hit.range.first)
+            }
+            // A label can be followed by a rider name. Do not allow such free-form words:
+            // without an address/rating/number, persist only the known action/product label.
+            if (!looksLikeAddress(t) && !moneyOrTime.containsMatchIn(t) && !rating.containsMatchIn(t)) {
+                val action=labelThenPossibleName.find(t)
+                if(action!=null) t=action.value
             }
             // Currency preceded by unknown text is not trusted as a name. Strip prefix.
             if (t.contains('$') && !looksLikeAddress(t) && !label.containsMatchIn(t)) {

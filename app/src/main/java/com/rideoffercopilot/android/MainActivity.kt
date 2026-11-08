@@ -112,13 +112,16 @@ class RideController(context: android.content.Context) {
         busy=true;page="home";error=""
         try {
             val lines=recognize(context,uri)
-            val candidate=OfferParser.scan(lines) ?: run { showError("Couldn't read this card. Check that the fare and trip miles/minutes are visible.");return }
-            if((candidate.platform=="Uber" && !settings.uberEnabled) || (candidate.platform=="Lyft" && !settings.lyftEnabled)) {
-                showError("${candidate.platform} is disabled in Settings.");return
+            val detected=UniversalOfferDetector.detect(lines) ?: run {
+                showError("Couldn't read this offer. Need a fare plus two of: miles, time, or pickup/dropoff.");return
             }
-            val verdict=DecisionEngine.decide(candidate,settings,zones) ?: run {
-                showError("Couldn't validate the numbers on this offer. Nothing was saved.");return
+            val brand=UniversalOfferDetector.brandOf(lines)
+            if((brand=="Uber" && !settings.uberEnabled) || (brand=="Lyft" && !settings.lyftEnabled)) {
+                showError("$brand is disabled in Settings.");return
             }
+            val verdict=detected.candidate?.let {DecisionEngine.decide(it,settings,zones)}
+                ?: detected.partial?.let {PartialDeliveryGrader.grade(it,settings,zones)}
+                ?: run {showError("Cannot evaluate this offer. Nothing was saved.");return}
             withContext(Dispatchers.IO) {database.addOffer(verdict)}
             currentOffer=verdict;refresh();page="verdict"
         } catch (e: Exception) {showError("Import failed: ${e.message ?: "Unknown error"}. Nothing was saved.")}

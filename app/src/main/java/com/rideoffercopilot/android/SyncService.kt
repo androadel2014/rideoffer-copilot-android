@@ -7,7 +7,7 @@ import java.net.URL
 import java.time.Instant
 
 object SyncPayload {
-    const val APP_VERSION = "1.0.0"
+    const val APP_VERSION = "2.1.0"
     private fun iso(time: Long) = Instant.ofEpochMilli(time).toString()
     private fun n(o: JSONObject, key: String, value: Any?) {o.put(key,value ?: JSONObject.NULL)}
     fun outcomeString(outcome: String): String = when(outcome) {
@@ -21,11 +21,11 @@ object SyncPayload {
         put("platform",o.platform);put("fare",o.fare)
         n(this,"surge",o.surgeIncludedDollars ?: o.surgeMultiplier)
         n(this,"pickup_miles",o.pickupMiles);n(this,"pickup_minutes",o.pickupMinutes)
-        put("trip_miles",o.tripMiles);put("trip_minutes",o.tripMinutes)
+        n(this,"trip_miles",o.tripMiles.takeIf{o.hasTripMiles});n(this,"trip_minutes",o.tripMinutes.takeIf{o.hasTripMinutes})
         n(this,"pickup_text",o.pickupText?.takeIf(CardPrivacy::looksLikeAddress))
         n(this,"dropoff_text",o.dropoffText?.takeIf(CardPrivacy::looksLikeAddress))
         n(this,"rating",o.riderRating);put("verdict",o.verdict)
-        put("net_per_mile",o.netDollarsPerMile);put("net_per_hour",o.netDollarsPerHour)
+        n(this,"net_per_mile",o.netDollarsPerMile.takeIf{o.metricMode=="full_trip"});n(this,"net_per_hour",o.netDollarsPerHour.takeIf{o.metricMode=="full_trip"})
         put("outcome",outcomeString(o.outcome))
         put("raw_text",CardPrivacy.sanitize(o.rawText.lines().mapIndexed { i,line -> OcrLine(line,i) }))
     }

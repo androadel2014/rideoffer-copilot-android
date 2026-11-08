@@ -26,8 +26,9 @@ class LiveOverlay(context: Context) {
         if (!Settings.canDrawOverlays(app)) return false
         hide()
         return try {
-            val isAccept = offer.verdict == "green"
-            val color = if (isAccept) Color.rgb(22, 120, 64) else Color.rgb(172, 35, 52)
+            // One source of truth shared with notifications/tests: GREEN/AMBER/RED.
+            val style = VerdictBadgeStyle.forVerdict(offer.verdict)
+            val color = style.argb
             val bg = GradientDrawable().apply { setColor(color); cornerRadius = dp(16f).toFloat() }
             val panel = LinearLayout(app).apply {
                 orientation = LinearLayout.VERTICAL
@@ -37,12 +38,15 @@ class LiveOverlay(context: Context) {
                 setPadding(dp(18f), dp(12f), dp(18f), dp(12f))
             }
             val heading = TextView(app).apply {
-                text = if (isAccept) "ACCEPT · tap to dismiss ×" else "SKIP · tap to dismiss ×"
+                text = "${style.title} · tap to dismiss ×"
                 textSize = 18f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
                 setTypeface(null, android.graphics.Typeface.BOLD)
             }
             val metrics = TextView(app).apply {
-                text = String.format(Locale.US, "NET $%.2f/mi  ·  $%.2f/hr", offer.netDollarsPerMile, offer.netDollarsPerHour)
+                text = if (offer.metricMode=="full_trip")
+                    String.format(Locale.US, "NET $%.2f/mi  ·  $%.2f/hr", offer.netDollarsPerMile, offer.netDollarsPerHour)
+                else String.format(Locale.US,"$%.2f / delivery%s",offer.fare,
+                    offer.grossHourlyEstimate?.let {String.format(Locale.US,"  ·  $%.2f/hr gross est.",it)} ?: "")
                 textSize = 15f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             }
             panel.addView(heading); panel.addView(metrics)

@@ -17,11 +17,11 @@ assert 'kotlinOptions {' not in app
 assert '1.12.' not in app
 assert 'android.intent.action.SEND' in manifest and 'image/*' in manifest
 assert 'android.permission.INTERNET' in manifest
-for permission in ('FOREGROUND_SERVICE_MEDIA_PROJECTION','FOREGROUND_SERVICE','SYSTEM_ALERT_WINDOW','POST_NOTIFICATIONS'):
+for permission in ('FOREGROUND_SERVICE_MEDIA_PROJECTION','FOREGROUND_SERVICE','SYSTEM_ALERT_WINDOW','POST_NOTIFICATIONS','PACKAGE_USAGE_STATS'):
     assert permission in manifest,permission
 assert 'android:foregroundServiceType="mediaProjection"' in manifest
 assert 'android:name=".LiveWatchService"' in manifest
-assert 'versionCode = 2' in app and 'versionName = "2.0.0"' in app
+assert 'versionCode = 3' in app and 'versionName = "2.1.0"' in app
 assert 'applicationId = "com.rideoffercopilot.android"' in app
 for forbidden in ('ACCESS_FINE_LOCATION','ACCESS_COARSE_LOCATION','READ_EXTERNAL_STORAGE','MANAGE_EXTERNAL_STORAGE','BIND_ACCESSIBILITY_SERVICE'):
     assert forbidden not in manifest
@@ -33,12 +33,25 @@ for term in ('MediaProjectionManager','createScreenCaptureIntent','FOREGROUND_SE
              'POST_NOTIFICATIONS','Settings.canDrawOverlays','ACTION_STOP','Overlay'):
     assert term in source, term
 assert 'AccessibilityService' not in source
+assert 'UsageStatsManager' in source and 'ACTIVITY_RESUMED' in source
+assert 'SourceAppResolver' in source
+assert 'UniversalOfferDetector.detect' in source and 'UniversalOfferDetector.looksLikeOffer' in source
+assert 'PartialDeliveryGrader.grade' in source
+assert 'VerdictBadgeStyle.forVerdict' in source
+assert 'APP_VERSION = "2.1.0"' in source
 assert 'CardPrivacy.sanitize' in source
 assert 'AES/GCM/NoPadding' in source
 for file in ('app/src/test/java/com/rideoffercopilot/android/DomainTests.kt',
              'app/src/test/java/com/rideoffercopilot/android/LiveWatchTests.kt',
              'app/src/test/resources/uber-transcript.txt','app/src/test/resources/lyft-transcript.txt',
-             'gradlew','gradlew.bat','gradle/wrapper/gradle-wrapper.properties'):
+             'gradlew','gradlew.bat','gradle/wrapper/gradle-wrapper.properties',
+             'app/src/test/java/com/rideoffercopilot/android/GenericOfferTests.kt',
+             'Scripts/UniversalSmoke.kt',
+             'app/src/main/java/com/rideoffercopilot/android/SourceAppResolver.kt',
+             'app/src/test/resources/amazon-flex-offer.txt',
+             'app/src/test/resources/instacart-offer.txt',
+             'app/src/test/resources/doordash-offer.txt',
+             'app/src/test/resources/spark-offer.txt'):
     assert (root/file).is_file(),file
 assert 'gradle-8.13-bin.zip' in (root/'gradle/wrapper/gradle-wrapper.properties').read_text()
 assert 'distributionSha256Sum=20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78' in (root/'gradle/wrapper/gradle-wrapper.properties').read_text()
@@ -50,4 +63,4 @@ if jar.exists():
     assert hashlib.sha256(jar.read_bytes()).hexdigest()==expected,'Official wrapper JAR checksum failed'
 else:
     print('LIMITATION: official wrapper JAR not shipped; gradlew and gradlew.bat fetch/check it on first build.')
-print('PASS: v2 pinned stack, capture permissions, foreground service, privacy, live detection, source structure')
+print('PASS: v2.1 pinned stack, generic offer detection, optional usage access, 3-color badge, privacy, sync-off, structure')

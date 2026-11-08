@@ -17,12 +17,14 @@ private fun JSONObject.optNullableLong(k: String): Long? = if (isNull(k) || !has
 object JsonCodec {
     fun offer(o: OfferRecord): JSONObject = JSONObject().apply {
         put("id", o.id); put("timestamp", o.timestamp); put("platform", o.platform); put("fare", o.fare)
-        put("tripMiles", o.tripMiles); put("tripMinutes", o.tripMinutes)
+        optionalNum("tripMiles", o.tripMiles.takeIf { o.hasTripMiles }); optionalNum("tripMinutes", o.tripMinutes.takeIf { o.hasTripMinutes })
         optionalNum("pickupMiles", o.pickupMiles); optionalNum("pickupMinutes", o.pickupMinutes)
         optionalNum("riderRating", o.riderRating); optionalNum("surgeMultiplier", o.surgeMultiplier)
         optionalNum("surgeIncludedDollars", o.surgeIncludedDollars)
-        put("netDollarsPerMile", o.netDollarsPerMile); put("netDollarsPerHour", o.netDollarsPerHour)
-        put("netDollarsPerMinute", o.netDollarsPerMinute); put("assumedPickupMissing", o.assumedPickupMissing)
+        optionalNum("netDollarsPerMile", o.netDollarsPerMile.takeIf { o.metricMode=="full_trip" })
+        optionalNum("netDollarsPerHour", o.netDollarsPerHour.takeIf { o.metricMode=="full_trip" })
+        optionalNum("netDollarsPerMinute", o.netDollarsPerMinute.takeIf { o.metricMode=="full_trip" })
+        put("assumedPickupMissing", o.assumedPickupMissing)
         put("verdict", o.verdict); put("outcome", o.outcome); optionalNum("outcomeTimestamp", o.outcomeTimestamp?.toDouble())
         put("reasons", o.reasons); optionalText("pickupText", o.pickupText?.takeIf(CardPrivacy::looksLikeAddress))
         optionalText("dropoffText", o.dropoffText?.takeIf(CardPrivacy::looksLikeAddress))
@@ -33,15 +35,17 @@ object JsonCodec {
         optionalNum("longTripReturnMiles", o.longTripReturnMiles)
         optionalNum("longTripReturnMinutes", o.longTripReturnMinutes)
         optionalNum("effectiveMiles", o.effectiveMiles); optionalNum("effectiveMinutes", o.effectiveMinutes)
+        put("metricMode", o.metricMode); put("hasTripMiles",o.hasTripMiles); put("hasTripMinutes",o.hasTripMinutes)
+        optionalNum("grossHourlyEstimate",o.grossHourlyEstimate)
     }
     fun decodeOffer(j: JSONObject): OfferRecord = OfferRecord(
         id=j.getString("id"), timestamp=j.getLong("timestamp"), platform=j.getString("platform"),
-        fare=j.getDouble("fare"), tripMiles=j.getDouble("tripMiles"), tripMinutes=j.getDouble("tripMinutes"),
+        fare=j.getDouble("fare"), tripMiles=j.optNullableDouble("tripMiles") ?: 0.0, tripMinutes=j.optNullableDouble("tripMinutes") ?: 0.0,
         pickupMiles=j.optNullableDouble("pickupMiles"), pickupMinutes=j.optNullableDouble("pickupMinutes"),
         riderRating=j.optNullableDouble("riderRating"), surgeMultiplier=j.optNullableDouble("surgeMultiplier"),
         surgeIncludedDollars=j.optNullableDouble("surgeIncludedDollars"),
-        netDollarsPerMile=j.getDouble("netDollarsPerMile"), netDollarsPerHour=j.getDouble("netDollarsPerHour"),
-        netDollarsPerMinute=j.getDouble("netDollarsPerMinute"), assumedPickupMissing=j.getBoolean("assumedPickupMissing"),
+        netDollarsPerMile=j.optNullableDouble("netDollarsPerMile") ?: 0.0, netDollarsPerHour=j.optNullableDouble("netDollarsPerHour") ?: 0.0,
+        netDollarsPerMinute=j.optNullableDouble("netDollarsPerMinute") ?: 0.0, assumedPickupMissing=j.getBoolean("assumedPickupMissing"),
         verdict=j.getString("verdict"), outcome=j.optString("outcome", "Pending"),
         outcomeTimestamp=j.optNullableLong("outcomeTimestamp"), reasons=j.getString("reasons"),
         pickupText=j.optNullableString("pickupText"), dropoffText=j.optNullableString("dropoffText"),
@@ -51,7 +55,9 @@ object JsonCodec {
         deadZoneRepositionMinutes=j.optNullableDouble("deadZoneRepositionMinutes"),
         longTripReturnMiles=j.optNullableDouble("longTripReturnMiles"),
         longTripReturnMinutes=j.optNullableDouble("longTripReturnMinutes"),
-        effectiveMiles=j.optNullableDouble("effectiveMiles"), effectiveMinutes=j.optNullableDouble("effectiveMinutes")
+        effectiveMiles=j.optNullableDouble("effectiveMiles"), effectiveMinutes=j.optNullableDouble("effectiveMinutes"),
+        metricMode=j.optString("metricMode","full_trip"),hasTripMiles=j.optBoolean("hasTripMiles",true),
+        hasTripMinutes=j.optBoolean("hasTripMinutes",true),grossHourlyEstimate=j.optNullableDouble("grossHourlyEstimate")
     )
     fun wait(w: WaitRecord): JSONObject = JSONObject().apply {
         put("id",w.id); put("driverID",w.driverID); put("zoneText",w.zoneText)
@@ -122,17 +128,22 @@ class OfferDatabase(context: Context): SQLiteOpenHelper(context, "rideoffer.db",
 }
 
 object ExportCodec {
-    private const val OFFER_HEADER = "timestamp,platform,fare,trip_miles,trip_minutes,pickup_miles,pickup_minutes,total_miles,total_minutes,net_dollars_per_mile,net_dollars_per_hour,net_dollars_per_minute,verdict,outcome,pickup_incomplete,rider_rating,surge_multiplier,surge_included_dollars,long_return_miles,long_return_minutes,effective_miles,effective_minutes,notes,driver_id,pickup_text,dropoff_text,raw_text,extraction_method,zone_tier,dead_zone_extra_miles,dead_zone_extra_minutes"
+    private const val OFFER_HEADER = "timestamp,platform,fare,trip_miles,trip_minutes,pickup_miles,pickup_minutes,total_miles,total_minutes,net_dollars_per_mile,net_dollars_per_hour,net_dollars_per_minute,verdict,outcome,pickup_incomplete,rider_rating,surge_multiplier,surge_included_dollars,long_return_miles,long_return_minutes,effective_miles,effective_minutes,notes,driver_id,pickup_text,dropoff_text,raw_text,extraction_method,zone_tier,dead_zone_extra_miles,dead_zone_extra_minutes,metric_mode,gross_hourly_estimate"
     private fun q(s: Any?): String = "\"${s?.toString().orEmpty().replace("\"","\"\"")}\""
     private fun iso(ms: Long): String = Instant.ofEpochMilli(ms).toString()
     fun offersCSV(rows: List<OfferRecord>): String = buildList {
         add(OFFER_HEADER)
-        for (r in rows) add(listOf(iso(r.timestamp),r.platform,r.fare,r.tripMiles,r.tripMinutes,r.pickupMiles,r.pickupMinutes,
-            r.totalMiles,r.totalMinutes,r.netDollarsPerMile,r.netDollarsPerHour,r.netDollarsPerMinute,
+        for (r in rows) add(listOf(iso(r.timestamp),r.platform,r.fare,r.tripMiles.takeIf {r.hasTripMiles},
+            r.tripMinutes.takeIf {r.hasTripMinutes},r.pickupMiles,r.pickupMinutes,
+            r.totalMiles.takeIf {r.hasTripMiles},r.totalMinutes.takeIf {r.hasTripMinutes},
+            r.netDollarsPerMile.takeIf {r.metricMode=="full_trip"},
+            r.netDollarsPerHour.takeIf {r.metricMode=="full_trip"},
+            r.netDollarsPerMinute.takeIf {r.metricMode=="full_trip"},
             when(r.verdict) {"green" -> "ACCEPT";"yellow" -> "BORDERLINE";else -> "DECLINE"},r.outcome,r.assumedPickupMissing,
             r.riderRating,r.surgeMultiplier,r.surgeIncludedDollars,r.longTripReturnMiles,r.longTripReturnMinutes,
             r.effectiveMiles,r.effectiveMinutes,r.reasons,r.driverID,r.pickupText,r.dropoffText,r.rawText,
-            r.extractionMethod,r.zoneTier,r.deadZoneRepositionMiles,r.deadZoneRepositionMinutes).joinToString(",") {q(it)})
+            r.extractionMethod,r.zoneTier,r.deadZoneRepositionMiles,r.deadZoneRepositionMinutes,
+            r.metricMode,r.grossHourlyEstimate).joinToString(",") {q(it)})
     }.joinToString("\r\n")
     fun waitsCSV(rows: List<WaitRecord>): String = buildList {
         add("driver_id,zone_text,started_at,duration_seconds,ended_by")

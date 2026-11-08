@@ -43,6 +43,10 @@ private fun verdictColor(value: String) = when(value){"green"->green;"yellow"->a
 private fun money(value: Double) = String.format(Locale.US,"$%.2f",value)
 private fun one(value: Double) = String.format(Locale.US,"%.1f",value)
 private fun date(ms: Long): String = java.text.SimpleDateFormat("MMM d, yyyy h:mm a",Locale.US).format(java.util.Date(ms))
+private fun offerMetrics(o: OfferRecord): String = if(o.metricMode=="full_trip")
+    "NET ${money(o.netDollarsPerMile)}/mi · ${money(o.netDollarsPerHour)}/hr"
+    else "${money(o.fare)}/delivery" + (o.grossHourlyEstimate?.let {" · ${money(it)}/hr est. GROSS (not net)"} ?: " · route/time incomplete")
+private fun verdictWord(s: String): String = when(s){"green"->"ACCEPT";"yellow"->"BORDERLINE";"red"->"SKIP";else->"REVIEW"}
 
 @Composable
 fun MaterialCopilot(sharedImage: Uri?, onConsumed: () -> Unit) {
@@ -84,6 +88,9 @@ fun MaterialCopilot(sharedImage: Uri?, onConsumed: () -> Unit) {
     val stopLive: () -> Unit = {
         context.startService(Intent(context, LiveWatchService::class.java).apply {action = LiveWatchService.ACTION_STOP})
     }
+    val usageSettings: () -> Unit = {
+        context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+    }
     val overlaySettings: () -> Unit = {
         context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
             Uri.parse("package:${context.packageName}")))
@@ -100,7 +107,8 @@ fun MaterialCopilot(sharedImage: Uri?, onConsumed: () -> Unit) {
                 else -> "Decline"
             }
             speaker.speak("$spokenVerdict. " +
-                "${money(offer.netDollarsPerMile)} net per mile. ${money(offer.netDollarsPerHour)} net per hour. " +
+                (if(offer.metricMode=="full_trip") "${money(offer.netDollarsPerMile)} net per mile. ${money(offer.netDollarsPerHour)} net per hour. "
+                 else "${money(offer.fare)} per delivery. " + (offer.grossHourlyEstimate?.let{"${money(it)} per hour gross estimate, not net. "} ?: "")) +
                 (if(offer.longTripReturnMiles!=null && offer.longTripReturnMiles>0) "Long trip, empty return assumed. " else "") +
                 (if(offer.zoneTier=="dead") "Dead-zone dropoff. " else ""))
         }
@@ -117,8 +125,8 @@ fun MaterialCopilot(sharedImage: Uri?, onConsumed: () -> Unit) {
                 when(controller.page) {
                     "home" -> HomeScreen(controller,
                         import={uri->scope.launch {controller.importImage(context,uri)}},
-                        startLive=startLive, stopLive=stopLive, openOverlaySettings=overlaySettings)
-                    "verdict" -> controller.currentOffer?.let { VerdictScreen(it,controller) {speaker.speak("${it.verdict.uppercase()}! ${money(it.netDollarsPerMile)} per mile, ${money(it.netDollarsPerHour)} per hour. ${it.reasons}")} }
+                        startLive=startLive, stopLive=stopLive, openOverlaySettings=overlaySettings,openUsageSettings=usageSettings)
+                    "verdict" -> controller.currentOffer?.let { VerdictScreen(it,controller) {speaker.speak("${verdictWord(it.verdict)}! ${offerMetrics(it)}. ${it.reasons}")} }
                     "history" -> HistoryScreen(controller)
                     "settings" -> SettingsScreen(controller) {scope.launch {controller.sync()}}
                     "error" -> FailureScreen(controller)
@@ -134,17 +142,19 @@ private fun HomeScreen(
     import: (Uri)->Unit,
     startLive: ()->Unit,
     stopLive: ()->Unit,
-    openOverlaySettings: ()->Unit
+    openOverlaySettings: ()->Unit,
+    openUsageSettings: ()->Unit
 ) {
     val context = LocalContext.current
     val picker=rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) {uri ->if(uri!=null)import(uri)}
     val active = LiveWatchState.running
     val overlayAllowed = remember(LiveWatchState.permissionRevision) { Settings.canDrawOverlays(context) }
+    val usageAllowed = remember(LiveWatchState.permissionRevision) { SourceAppResolver(context).hasUsageAccess() }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement=Arrangement.spacedBy(14.dp)) {
         Text("RideOffer Copilot",style=MaterialTheme.typography.headlineLarge,fontWeight=FontWeight.Bold)
-        Text("Live Uber + Lyft offer monitor",style=MaterialTheme.typography.bodyLarge)
-        Text("Android will ask to share your screen every time you start. Choose ENTIRE SCREEN to watch Uber and Lyft. Capture stays on this phone.",
+        Text("Live offer watch · any work app",style=MaterialTheme.typography.bodyLarge)
+        Text("Android asks for consent each session. Choose ENTIRE SCREEN to follow different work apps. OCR stays on device.",
             color=MaterialTheme.colorScheme.onSurfaceVariant)
         Button(onClick=if(active)stopLive else startLive,modifier=Modifier.fillMaxWidth().height(74.dp)) {
             Text(if(active) "Stop live watch" else "Start live watch",fontSize=21.sp)
@@ -152,6 +162,11 @@ private fun HomeScreen(
         Text("Status: ${LiveWatchState.status}",color=if(active)green else MaterialTheme.colorScheme.onSurfaceVariant)
         Text("While watching, a persistent notification offers STOP. The screen must remain on. Offers are auto-logged once.",
             style=MaterialTheme.typography.bodySmall)
+        HorizontalDivider()
+        Text("Source-app identification (optional)",style=MaterialTheme.typography.titleMedium)
+        Text(if(usageAllowed) "Usage Access enabled; package-based app names will be shown in History."
+            else "MediaProjection does not reveal the app name. Allow Usage Access to identify the foreground package. Without it, live entries say Unknown app.")
+        if(!usageAllowed) OutlinedButton(onClick=openUsageSettings){Text("Allow Usage Access (optional)")}
         HorizontalDivider()
         Text("Floating verdict (optional)",style=MaterialTheme.typography.titleMedium)
         Text(if (overlayAllowed) "Floating badge permission is enabled. A short top-of-screen badge appears on detection."
@@ -164,9 +179,9 @@ private fun HomeScreen(
             Text("Latest live offer",style=MaterialTheme.typography.titleLarge)
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                    Text(if(offer.verdict=="green")"ACCEPT" else "SKIP",fontSize=32.sp,
-                        fontWeight=FontWeight.Bold,color=if(offer.verdict=="green")green else red)
-                    Text("${offer.platform} · ${money(offer.fare)} · NET ${money(offer.netDollarsPerMile)}/mi · ${money(offer.netDollarsPerHour)}/hr")
+                    Text(verdictWord(offer.verdict),fontSize=32.sp,
+                        fontWeight=FontWeight.Bold,color=verdictColor(offer.verdict))
+                    Text("${offer.platform} · ${money(offer.fare)} · ${offerMetrics(offer)}")
                     Text(offer.reasons,style=MaterialTheme.typography.bodySmall)
                     OutlinedButton(onClick={controller.currentOfferFromLive(offer)}) {Text("View full verdict")}
                 }
@@ -175,7 +190,7 @@ private fun HomeScreen(
         if (active && controller.offers.isNotEmpty()) {
             Text("Recent feed",style=MaterialTheme.typography.titleMedium)
             for (offer in controller.offers.take(4)) {
-                Text("${date(offer.timestamp)} · ${offer.platform} · ${if(offer.verdict=="green")"ACCEPT" else "SKIP"} · ${money(offer.netDollarsPerMile)}/mi")
+                Text("${date(offer.timestamp)} · ${offer.platform} · ${verdictWord(offer.verdict)} · ${offerMetrics(offer)}")
             }
         }
         HorizontalDivider()
@@ -199,11 +214,17 @@ private fun VerdictScreen(o: OfferRecord, controller: RideController, speak: ()-
         horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(14.dp)) {
         Text(when(o.verdict){"green"->"ACCEPT";"yellow"->"BORDERLINE";else->"DECLINE"},
             color=Color.White,fontSize=49.sp,fontWeight=FontWeight.ExtraBold)
-        Text("NET after operating cost",color=Color.White)
-        Text("${money(o.netDollarsPerMile)} / mi",color=Color.White,fontSize=38.sp,fontWeight=FontWeight.Bold)
-        Text("${money(o.netDollarsPerHour)} / hr",color=Color.White,fontSize=34.sp,fontWeight=FontWeight.Bold)
+        if(o.metricMode=="full_trip") {
+            Text("NET after operating cost",color=Color.White)
+            Text("${money(o.netDollarsPerMile)} / mi",color=Color.White,fontSize=38.sp,fontWeight=FontWeight.Bold)
+            Text("${money(o.netDollarsPerHour)} / hr",color=Color.White,fontSize=34.sp,fontWeight=FontWeight.Bold)
+        } else {
+            Text("INCOMPLETE DATA — NOT A NET PROFIT VERDICT",color=Color.White)
+            Text("${money(o.fare)} / delivery",color=Color.White,fontSize=38.sp,fontWeight=FontWeight.Bold)
+            o.grossHourlyEstimate?.let { Text("${money(it)} / hr est. GROSS",color=Color.White,fontSize=27.sp) }
+        }
         Text("${o.platform}  ·  Fare ${money(o.fare)}",color=Color.White,fontSize=21.sp)
-        Text("Trip: ${one(o.tripMiles)} mi · ${one(o.tripMinutes)} min",color=Color.White)
+        Text("Trip: ${if(o.hasTripMiles)one(o.tripMiles) else "unknown"} mi · ${if(o.hasTripMinutes)one(o.tripMinutes) else "unknown"} min",color=Color.White)
         Text("Pickup: ${o.pickupMiles?.let(::one)?:"unknown"} mi · ${o.pickupMinutes?.let(::one)?:"unknown"} min",color=Color.White)
         if(o.effectiveMiles!=null) Text("Effective: ${one(o.effectiveMiles)} mi · ${one(o.effectiveMinutes?:0.0)} min",color=Color.White)
         Text(o.reasons,color=Color.White,textAlign=TextAlign.Center)
@@ -275,7 +296,7 @@ private fun HistoryScreen(controller: RideController) {
                             Text("${offer.platform} · ${money(offer.fare)}",fontWeight=FontWeight.Bold,modifier=Modifier.weight(1f))
                             Surface(color=verdictColor(offer.verdict),shape=RoundedCornerShape(6.dp)) {Text(offer.verdict.uppercase(),color=Color.White,modifier=Modifier.padding(horizontal=10.dp,vertical=5.dp))}
                         }
-                        Text("${money(offer.netDollarsPerMile)}/mi · ${money(offer.netDollarsPerHour)}/hr")
+                        Text(offerMetrics(offer))
                         Text("${date(offer.timestamp)} · ${offer.outcome}",color=MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -285,7 +306,7 @@ private fun HistoryScreen(controller: RideController) {
     if(detail!=null) AlertDialog(onDismissRequest={detail=null},title={Text("Offer details")},
         text={Column(Modifier.heightIn(max=540.dp).verticalScroll(rememberScrollState())) {
             val o=detail!!
-            Text("${o.platform} · ${date(o.timestamp)}\nFare ${money(o.fare)} · ${o.verdict.uppercase()}\nNet ${money(o.netDollarsPerMile)}/mi · ${money(o.netDollarsPerHour)}/hr · ${money(o.netDollarsPerMinute)}/min\nTrip ${one(o.tripMiles)}mi/${one(o.tripMinutes)}min · Pickup ${o.pickupMiles?:"?"}mi/${o.pickupMinutes?:"?"}min\nTotal ${one(o.totalMiles)}mi/${one(o.totalMinutes)}min\nEffective ${o.effectiveMiles?:"–"}mi/${o.effectiveMinutes?:"–"}min\nLong return ${o.longTripReturnMiles?:"–"}mi/${o.longTripReturnMinutes?:"–"}min\nDead reposition ${o.deadZoneRepositionMiles?:"–"}mi/${o.deadZoneRepositionMinutes?:"–"}min\nZone ${o.zoneTier}\nRating ${o.riderRating?:"–"}\nSurge included ${o.surgeIncludedDollars?:"–"}; multiplier ${o.surgeMultiplier?:"–"}\nDriver ${o.driverID} · Method ${o.extractionMethod}\nPickup incomplete ${o.assumedPickupMissing}\nOutcome ${o.outcome}\nPickup: ${o.pickupText?:"–"}\nDropoff: ${o.dropoffText?:"–"}\n\n${o.reasons}\n\nRedacted OCR:\n${o.rawText}")
+            Text("${o.platform} · ${date(o.timestamp)}\nFare ${money(o.fare)} · ${o.verdict.uppercase()}\n${offerMetrics(o)}\nTrip ${if(o.hasTripMiles)one(o.tripMiles) else "unknown"}mi/${if(o.hasTripMinutes)one(o.tripMinutes) else "unknown"}min · Pickup ${o.pickupMiles?:"?"}mi/${o.pickupMinutes?:"?"}min\nTotal ${if(o.hasTripMiles)one(o.totalMiles) else "unknown"}mi/${if(o.hasTripMinutes)one(o.totalMinutes) else "unknown"}min\nEffective ${o.effectiveMiles?:"–"}mi/${o.effectiveMinutes?:"–"}min\nLong return ${o.longTripReturnMiles?:"–"}mi/${o.longTripReturnMinutes?:"–"}min\nDead reposition ${o.deadZoneRepositionMiles?:"–"}mi/${o.deadZoneRepositionMinutes?:"–"}min\nZone ${o.zoneTier}\nRating ${o.riderRating?:"–"}\nSurge included ${o.surgeIncludedDollars?:"–"}; multiplier ${o.surgeMultiplier?:"–"}\nDriver ${o.driverID} · Method ${o.extractionMethod}\nPickup incomplete ${o.assumedPickupMissing}\nOutcome ${o.outcome}\nPickup: ${o.pickupText?:"–"}\nDropoff: ${o.dropoffText?:"–"}\n\n${o.reasons}\n\nRedacted OCR:\n${o.rawText}")
         }},confirmButton={TextButton(onClick={detail=null}){Text("Close")}})
     if(confirmDelete) AlertDialog(onDismissRequest={confirmDelete=false},title={Text("Delete everything?")},
         text={Text("Deletes all offers and waits stored on this phone. Cannot be undone.")},
