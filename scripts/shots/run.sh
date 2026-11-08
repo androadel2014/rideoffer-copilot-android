@@ -59,12 +59,24 @@ send_offer() {
 share_via_gallery() {
   # $1 = MediaStore id; open the card in the gallery app, then use its real
   # Share sheet so the system attaches a genuine ClipData URI grant.
+  # Run 5: the Uber share worked, the Lyft share flaked — Photos was still
+  # running with the previous photo/share state. Force a fresh Photos for
+  # every card, and give the share sheet one scroll-and-retry.
+  adb shell am force-stop com.google.android.apps.photos || true
+  adb shell am force-stop com.android.gallery3d || true
+  sleep 1
   adb shell am start -a android.intent.action.VIEW -t image/jpeg \
     -d "content://media/external/images/media/$1" -f 1 >/dev/null 2>&1 || return 1
-  sleep 5
+  sleep 6
   tap_text "Share" contains || return 1
   sleep 3
-  tap_text "RideOffer Copilot" contains || return 1
+  if ! tap_text "RideOffer Copilot" contains; then
+    dump_ui
+    cp /tmp/dump.xml "$OUT/debug-share-sheet.xml" || true
+    adb shell input swipe 540 1500 540 700 300 || true
+    sleep 2
+    tap_text "RideOffer Copilot" contains || return 1
+  fi
   sleep 2
   return 0
 }
