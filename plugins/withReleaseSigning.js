@@ -28,7 +28,19 @@ module.exports = function withReleaseSigning(config) {
       /(buildTypes\s*\{[\s\S]*?release\s*\{[^}]*?)signingConfig\s+signingConfigs\.debug/,
       `$1signingConfig System.getenv("ROC_UPLOAD_STORE_FILE") ? signingConfigs.upload : signingConfigs.debug`
     );
-    g = g.replace(/versionCode\s+(\d+)/, 'versionCode ((System.getenv("ROC_VERSION_CODE") ?: "$1") as String).toInteger()');
+    // Gate fix (2026-11-15): the inline Elvis expression failed Gradle project
+    // evaluation in CI ("Value is null" at the versionCode line). Hoist it into a
+    // plain def above the android block instead.
+    g = g.replace(
+      /versionCode\s+(\d+)/,
+      'versionCode rocVersionCode'
+    );
+    if (!g.includes('rocVersionCode =')) {
+      g = g.replace(
+        /(^|\n)android\s*\{/,
+        `$1def rocVersionCode = (System.getenv("ROC_VERSION_CODE") ?: "1").toInteger()\nandroid {`
+      );
+    }
     cfg.modResults.contents = g;
     return cfg;
   });
