@@ -1,0 +1,22 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.rideoffercopilot.screenwatcher'
+version = '1.0.0'
+
+android {
+  namespace "com.rideoffercopilot.screenwatcher"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+}
+
+dependencies {
+  // Bundled (fully on-device) Latin text recognizer. The model ships inside the APK;
+  // no Google Play services model download is involved.
+  implementation 'com.google.mlkit:text-recognition:16.0.1'
+  implementation 'androidx.core:core-ktx:1.13.1'
+}
