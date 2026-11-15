@@ -39,7 +39,12 @@ jobs:
       - name: Assemble debug APK
         working-directory: android
         run: ./gradlew :app:assembleDebug --no-daemon
+      # Gate note (2026-11-15): the account's Actions artifact storage is at 100%
+      # quota, so uploads fail with "Artifact storage quota has been hit" even
+      # though the build succeeded. Keep the upload non-fatal (same workaround as
+      # the Fakarny repo) until old artifacts are purged / quota recovers.
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: rideoffer-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
