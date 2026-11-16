@@ -14,10 +14,12 @@ on:
         options: [eas, gradle]
   push:
     tags: ['v*']
+    branches: [claude-build-v1]
+    paths: ['.github/workflows/release-aab.yml']
 
 jobs:
   eas:
-    if: github.event_name == 'push' || inputs.builder == 'eas'
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.builder == 'eas')
     name: EAS build + submit to internal track
     runs-on: ubuntu-latest
     steps:
@@ -37,7 +39,7 @@ jobs:
         run: eas build --platform android --profile production --non-interactive --auto-submit
 
   gradle:
-    if: github.event_name == 'workflow_dispatch' && inputs.builder == 'gradle'
+    if: (github.event_name == 'workflow_dispatch' && inputs.builder == 'gradle') || (github.event_name == 'push' && github.ref == 'refs/heads/claude-build-v1')
     name: Gradle bundleRelease + upload to internal track
     runs-on: ubuntu-latest
     steps:
