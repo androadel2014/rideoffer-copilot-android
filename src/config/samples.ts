@@ -37,4 +37,28 @@ Fair Oaks Mall, Fairfax
 Main St, Warrenton, VA
 Accept`,
   },
+  {
+    id: 'eu',
+    label: 'Sample Eurozone offer (€, km, decimal commas)',
+    text: `UberX
+€14,80
+★ 4,91
+4 min (1,6 km) away
+Hauptstraße 5, Berlin
+19 min (9,8 km) trip
+Alexanderplatz, Berlin
+Accept`,
+  },
+  {
+    id: 'eg',
+    label: 'Sample Egypt offer (EGP, Arabic numerals)',
+    text: `UberX
+EGP ١٤٥٫٠٠
+★ ٤٫٨٧
+٥ دقائق (٢٫٣ كم) بعيد
+شارع التحرير، الدقي
+٢٢ دقيقة (١١٫٤ كم) رحلة
+مدينة نصر، القاهرة
+Accept`,
+  },
 ];

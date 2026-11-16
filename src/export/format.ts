@@ -6,6 +6,8 @@ const OFFER_COLUMNS: Array<keyof OfferRecord> = [
   'multiStop', 'zoneClass', 'zoneKeyword', 'effMi', 'effMin', 'cost', 'net',
   'grossPerMile', 'grossPerHour', 'netPerMile', 'netPerHour', 'verdict', 'reason', 'flags',
   'confidence', 'readPath', 'fallbackFields', 'rawText', 'sessionId', 'synced',
+  // v11 (appended so column positions from earlier exports stay the same)
+  'totalMi', 'totalMin', 'currency', 'distanceUnit', 'market',
 ];
 
 const WAIT_COLUMNS: Array<keyof WaitRow> = ['id', 'startTs', 'durationSec', 'zoneText', 'startedBy', 'endedBy', 'sessionId', 'synced'];

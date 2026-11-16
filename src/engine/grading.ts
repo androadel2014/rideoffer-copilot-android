@@ -1,17 +1,20 @@
+import {
+  formatDistance,
+  formatMoney,
+  formatPerDistance,
+  formatPerHour as fmtHour,
+  US_FORMAT,
+  type MoneyFormat,
+} from './market';
 import type { GradeResult, GradingSettings, ParsedOffer, Verdict, Zone } from './types';
 import { matchZone } from './zones';
 
 const round = (n: number, d = 2) => Math.round(n * 10 ** d) / 10 ** d;
-export const money = (n: number) => `$${n.toFixed(2)}`;
+export const money = (n: number, f: MoneyFormat = US_FORMAT) => formatMoney(n, f);
 /** "$36/hr" — the first headline number. */
-const perHr = (n: number) => `${n < 0 ? '−' : ''}$${Math.abs(Math.round(n))}/hr`;
-/** "68¢/mi" under a dollar, "$1.42/mi" from a dollar up — the second headline number. */
-const perMi = (n: number) => {
-  const sign = n < 0 ? '−' : '';
-  const a = Math.abs(n);
-  const cents = Math.round(a * 100);
-  return cents < 100 ? `${sign}${cents}¢/mi` : `${sign}$${a.toFixed(2)}/mi`;
-};
+const perHr = (n: number, f: MoneyFormat) => fmtHour(n, f);
+/** "68¢/mi" under a dollar, "$1.42/mi" from a dollar up, "€0,44/km" — the second headline number. */
+const perMi = (n: number, f: MoneyFormat) => formatPerDistance(n, f);
 
 type GradeInput = Pick<
   ParsedOffer,
@@ -26,14 +29,18 @@ type GradeInput = Pick<
   | 'riderRating'
   | 'offerType'
   | 'multiStop'
->;
+> &
+  Partial<Pick<ParsedOffer, 'totalMi' | 'totalMin'>>;
 
 /**
  * Grading math
  * ------------
  *   total    = fare (+ separately shown bonus, if enabled and not "included")
- *   effMi    = pickupMi + tripMi (+ deadZoneExtraMiles if the dropoff is a dead zone)
- *   effMin   = pickupMin + tripMin (+ deadZoneExtraMinutes if dead zone)
+ *   totalMi  = pickupMi + tripMi             ← TOTAL distance of the job
+ *   totalMin = pickupMin + tripMin
+ *              (a card that shows only a "Total" line is graded on that total)
+ *   effMi    = totalMi  (+ deadZoneExtraMiles if the dropoff is a dead zone)
+ *   effMin   = totalMin (+ deadZoneExtraMinutes if dead zone)
  *   cost     = costPerMile × effMi
  *   net      = total − cost
  *   gross/mi = total / effMi        gross/hr = total / (effMin / 60)
@@ -46,8 +53,18 @@ type GradeInput = Pick<
  * Both rates must be good for GREAT, either being bad makes it BAD: a ride that pays
  * well per mile but crawls through traffic, or pays well per hour but burns miles,
  * is not a great ride.
+ *
+ * Every rate uses the TOTAL distance and time (never the trip leg alone). Distances are
+ * miles and rates are per mile internally; `fmt` only changes how the reason text shows
+ * them (currency, mi/km, decimal comma). `settings` must already be per mile in the
+ * offer's currency — build it with gradingFor() in config/validate.
  */
-export function gradeOffer(offer: GradeInput, settings: GradingSettings, zones: Zone[]): GradeResult {
+export function gradeOffer(
+  offer: GradeInput,
+  settings: GradingSettings,
+  zones: Zone[],
+  fmt: MoneyFormat = US_FORMAT
+): GradeResult {
   const zone = matchZone(offer.dropoffArea, zones);
   const flags: string[] = [];
   const estimated: Array<'tripMi' | 'tripMin'> = [];
@@ -58,6 +75,8 @@ export function gradeOffer(offer: GradeInput, settings: GradingSettings, zones: 
     reason,
     flags,
     total: null,
+    totalMi: null,
+    totalMin: null,
     effMi: null,
     effMin: null,
     cost: null,
@@ -73,32 +92,47 @@ export function gradeOffer(offer: GradeInput, settings: GradingSettings, zones: 
 
   if (offer.fare == null || !(offer.fare > 0)) return empty("Couldn't read the fare");
 
+  const mph = Math.max(5, settings.assumedAvgMph);
   let tripMi = offer.tripMi;
   let tripMin = offer.tripMin;
-  const mph = Math.max(5, settings.assumedAvgMph);
-  if (tripMi == null && tripMin == null) return empty("Couldn't read trip length");
-  if (tripMi == null && tripMin != null) {
-    tripMi = (tripMin / 60) * mph;
-    estimated.push('tripMi');
-    flags.push('Trip miles estimated');
-  }
-  if (tripMin == null && tripMi != null) {
-    tripMin = (tripMi / mph) * 60;
-    estimated.push('tripMin');
-    flags.push('Trip minutes estimated');
-  }
-  const pickupMi = offer.pickupMi ?? 0;
-  const pickupMin = offer.pickupMin ?? 0;
-  if (offer.pickupMi == null && offer.pickupMin == null) flags.push('Pickup not read');
+  const cardTotalMi = offer.totalMi ?? null;
+  const cardTotalMin = offer.totalMin ?? null;
+  const hasTrip = tripMi != null || tripMin != null;
+  const hasCardTotal = cardTotalMi != null || cardTotalMin != null;
+  if (!hasTrip && !hasCardTotal) return empty("Couldn't read trip length");
 
   let total = offer.fare;
   if (settings.addSeparateBonus && offer.surge != null && offer.surge > 0 && !offer.surgeIncluded) {
     total += offer.surge;
   }
 
+  let totalMi: number;
+  let totalMin: number;
+  if (hasTrip) {
+    if (tripMi == null && tripMin != null) {
+      tripMi = (tripMin / 60) * mph;
+      estimated.push('tripMi');
+      flags.push(fmt.unit === 'km' ? 'Trip km estimated' : 'Trip miles estimated');
+    }
+    if (tripMin == null && tripMi != null) {
+      tripMin = (tripMi / mph) * 60;
+      estimated.push('tripMin');
+      flags.push('Trip minutes estimated');
+    }
+    if (offer.pickupMi == null && offer.pickupMin == null) flags.push('Pickup not read');
+    // TOTAL distance and time = pickup leg + trip leg.
+    totalMi = (offer.pickupMi ?? 0) + (tripMi as number);
+    totalMin = (offer.pickupMin ?? 0) + (tripMin as number);
+  } else {
+    // Only a "Total" line could be read: grade on the card's own total.
+    totalMi = cardTotalMi ?? ((cardTotalMin as number) / 60) * mph;
+    totalMin = cardTotalMin ?? ((cardTotalMi as number) / mph) * 60;
+    flags.push('Graded on card total');
+  }
+
   const penaltyApplied = zone.zoneClass === 'dead';
-  const effMi = pickupMi + (tripMi as number) + (penaltyApplied ? settings.deadZoneExtraMiles : 0);
-  const effMin = pickupMin + (tripMin as number) + (penaltyApplied ? settings.deadZoneExtraMinutes : 0);
+  const effMi = totalMi + (penaltyApplied ? settings.deadZoneExtraMiles : 0);
+  const effMin = totalMin + (penaltyApplied ? settings.deadZoneExtraMinutes : 0);
   if (!(effMi > 0) || !(effMin > 0)) return empty("Couldn't read trip length");
 
   const cost = settings.costPerMile * effMi;
@@ -117,10 +151,10 @@ export function gradeOffer(offer: GradeInput, settings: GradingSettings, zones: 
   let verdict: Verdict = badMi || badHr ? 'BAD' : greatMi && greatHr ? 'GREAT' : 'OK';
 
   // --- Flags (shown under the reason) ---
-  const tripMinutes = tripMin as number;
-  const tripMiles = tripMi as number;
+  const tripMinutes = tripMin ?? totalMin;
+  const tripMiles = tripMi ?? totalMi;
   if (tripMinutes >= settings.longTripMinutes || tripMiles >= settings.longTripMiles) {
-    flags.unshift(`Long trip (${Math.round(tripMinutes)} min, ${tripMiles.toFixed(1)} mi)`);
+    flags.unshift(`Long trip (${Math.round(tripMinutes)} min, ${formatDistance(tripMiles, fmt)})`);
   }
   if (offer.pickupMin != null && offer.pickupMin >= settings.longPickupMinutes) {
     flags.push(`Long pickup (${Math.round(offer.pickupMin)} min)`);
@@ -138,18 +172,18 @@ export function gradeOffer(offer: GradeInput, settings: GradingSettings, zones: 
     reason =
       verdict === 'GREAT'
         ? `Dead-zone dropoff: ${zone.keyword}, still Great after the return trip`
-        : `Dead-zone dropoff: ${zone.keyword} (+${settings.deadZoneExtraMinutes} min, +${settings.deadZoneExtraMiles} mi to get back)`;
+        : `Dead-zone dropoff: ${zone.keyword} (+${settings.deadZoneExtraMinutes} min, +${formatDistance(settings.deadZoneExtraMiles, fmt).replace(/[.,]0 /, ' ')} to get back)`;
   } else if (verdict === 'BAD') {
     // $/hr leads, so it is named first when both are under the floor.
     reason = badHr
-      ? `Net ${perHr(netPerHour)} is under your ${perHr(settings.badBelowNetPerHour)} floor`
-      : `Net ${perMi(netPerMile)} is under your ${perMi(settings.badBelowNetPerMile)} floor`;
+      ? `Net ${perHr(netPerHour, fmt)} is under your ${perHr(settings.badBelowNetPerHour, fmt)} floor`
+      : `Net ${perMi(netPerMile, fmt)} is under your ${perMi(settings.badBelowNetPerMile, fmt)} floor`;
   } else if (verdict === 'GREAT') {
-    reason = `Clears ${perHr(settings.greatMinNetPerHour)} and ${perMi(settings.greatMinNetPerMile)} net`;
+    reason = `Clears ${perHr(settings.greatMinNetPerHour, fmt)} and ${perMi(settings.greatMinNetPerMile, fmt)} net`;
   } else {
     const misses: string[] = [];
     if (!greatHr) misses.push('$/hour');
-    if (!greatMi) misses.push('per-mile');
+    if (!greatMi) misses.push(fmt.unit === 'km' ? 'per-km' : 'per-mile');
     reason = `Fair ride: ${misses.join(' and ')} below Great`;
   }
 
@@ -159,7 +193,10 @@ export function gradeOffer(offer: GradeInput, settings: GradingSettings, zones: 
     reason,
     flags,
     total: round(total),
-    effMi: round(effMi, 1),
+    // Miles keep 3 decimals so km markets display exactly what the card said.
+    totalMi: round(totalMi, 3),
+    totalMin: round(totalMin, 0),
+    effMi: round(effMi, 3),
     effMin: round(effMin, 0),
     cost: round(cost),
     net: round(net),
@@ -180,9 +217,9 @@ export const VERDICT_COLORS: Record<Verdict | 'CHECK', { background: string; for
   CHECK: { background: '#3A4256', foreground: '#FFFFFF' },
 };
 
-export function formatPerMile(n: number | null): string {
-  return n == null ? '—' : perMi(n);
+export function formatPerMile(n: number | null, f: MoneyFormat = US_FORMAT): string {
+  return n == null ? '—' : perMi(n, f);
 }
-export function formatPerHour(n: number | null): string {
-  return n == null ? '—' : perHr(n);
+export function formatPerHour(n: number | null, f: MoneyFormat = US_FORMAT): string {
+  return n == null ? '—' : perHr(n, f);
 }

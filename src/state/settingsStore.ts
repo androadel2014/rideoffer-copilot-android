@@ -1,4 +1,6 @@
 import { DEFAULT_SETTINGS, DEFAULT_ZONES, type AppSettings } from '../config/defaults';
+import type { MarketCode, MarketProfile, MarketSettings } from '../engine/market';
+import { profileFor } from '../engine/market';
 import { normalizeSettings } from '../config/validate';
 import { getKv, listZones, replaceZones, setKv } from '../db/database';
 import type { Zone } from '../engine/types';
@@ -57,6 +59,27 @@ export async function updateSettings(mutator: (s: AppSettings) => AppSettings): 
   settingsStore.set({ settings: next });
   await setKv(SETTINGS_KEY, JSON.stringify(next));
   return next;
+}
+
+export async function updateMarket(patch: Partial<MarketSettings>): Promise<AppSettings> {
+  return updateSettings((s) => ({ ...s, market: { ...s.market, ...patch } }));
+}
+
+/** Edits one market's cost/threshold profile (in that market's currency and unit). */
+export async function updateProfile(code: MarketCode, patch: Partial<MarketProfile>): Promise<AppSettings> {
+  return updateSettings((s) => ({
+    ...s,
+    market: { ...s.market, profiles: { ...s.market.profiles, [code]: { ...profileFor(s.market, code), ...patch } } },
+  }));
+}
+
+/** Back to the converted defaults for that market. */
+export async function resetProfile(code: MarketCode): Promise<AppSettings> {
+  return updateSettings((s) => {
+    const profiles = { ...s.market.profiles };
+    delete profiles[code];
+    return { ...s, market: { ...s.market, profiles } };
+  });
 }
 
 export async function saveZones(zones: Zone[]): Promise<void> {

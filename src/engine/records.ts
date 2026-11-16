@@ -1,6 +1,14 @@
+import type { CurrencyCode, DistanceUnit, MarketCode } from './market';
 import type { Platform, ReadPath, Verdict, WaitEndedBy, WaitStartedBy, ZoneClass } from './types';
 
-/** One detected offer as stored in SQLite (and exported / synced). Never contains rider names. */
+/**
+ * One detected offer as stored in SQLite (and exported / synced). Never contains rider
+ * names: there is no name field, and every text field is sanitized before it gets here.
+ *
+ * Distances are MILES and rates are per MILE (canonical), in `currency`. `distanceUnit`
+ * and `market` say how to show them. Records from before v11 have null currency/unit/
+ * market and are shown as US dollars and miles (so these fields are optional).
+ */
 export interface OfferRecord {
   id: number;
   sessionId: number | null;
@@ -14,10 +22,17 @@ export interface OfferRecord {
   pickupMin: number | null;
   tripMi: number | null;
   tripMin: number | null;
+  /** Pickup + trip: the TOTAL distance/time every rate is computed on (before any dead-zone return). */
+  totalMi?: number | null;
+  totalMin?: number | null;
   pickupArea: string | null;
   dropoffArea: string | null;
+  /** Rider's star rating as shown on the card (1–5). */
   riderRating: number | null;
   offerType: string | null;
+  currency?: CurrencyCode | null;
+  distanceUnit?: DistanceUnit | null;
+  market?: MarketCode | null;
   multiStop: boolean;
   zoneClass: ZoneClass;
   zoneKeyword: string | null;

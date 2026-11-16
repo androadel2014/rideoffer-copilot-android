@@ -36,11 +36,20 @@ export interface OverlayPayload {
   mileLabel: string;
   verdict: string;
   reason: string;
+  /** Flags, may be empty. */
   detail: string;
+  /** "$18.42 · 15.4 mi · 27 min total". */
+  meta: string;
+  /** "★ 4.93" or "". */
+  rating: string;
   background: string;
   foreground: string;
   durationMs: number;
-  position: 'top' | 'center';
+  /** "card" floats on top of the detected offer card (anchorTop/anchorBottom), else top/center of screen. */
+  position: 'card' | 'top' | 'center';
+  /** Offer-card edges as fractions of the screen height; −1 when unknown. */
+  anchorTop: number;
+  anchorBottom: number;
 }
 
 interface Subscription {

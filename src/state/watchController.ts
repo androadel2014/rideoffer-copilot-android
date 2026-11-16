@@ -1,18 +1,19 @@
 import { AppState, PermissionsAndroid, Platform } from 'react-native';
 import { ScreenWatcher, parseCardLines, type CardEventPayload } from '../../modules/screen-watcher';
 import { endSession, insertOffer, insertWait, startSession } from '../db/database';
-import { buildOverlay } from '../engine/overlay';
-import { gradeOffer } from '../engine/grading';
+import { evaluateInput, gradeParsed, toRecord, type Evaluation } from '../engine/evaluate';
+import { buildOverlay, cleanAnchor, type OverlayAnchor } from '../engine/overlay';
 import type { OfferRecord } from '../engine/records';
-import type { GradeResult, ParsedOffer } from '../engine/types';
+import type { ParsedOffer } from '../engine/types';
 import { WaitTracker, type ScreenSignal } from '../engine/waitTracker';
-import { parseCard, textToLines } from '../ocr/parser';
+import { textToLines } from '../ocr/parser';
 import { kickSync, refreshPendingCount } from '../sync/syncService';
 import { appStore, bumpHistory, EMPTY_STATS } from './appStore';
 import { settingsStore } from './settingsStore';
 
 /**
- * The live pipeline:  native card event → parse (+privacy) → grade → overlay → SQLite → waits → sync kick.
+ * The live pipeline:  native card event → parse (+privacy, currency, units) → market → grade
+ *                     → overlay ON the offer card → SQLite → waits → sync kick.
  * The overlay is shown BEFORE anything is written, so storage can never slow the verdict.
  * Every step is guarded: a bad card is logged as unreadable, never a crash.
  */
@@ -171,21 +172,27 @@ async function finalizeSession(notice: string | null, userInitiated: boolean) {
 
 // ---------------------------------------------------------------------------------------
 
-export interface Evaluation {
-  parsed: ParsedOffer;
-  grade: GradeResult;
-}
+export type { Evaluation };
+export { toRecord };
 
 export function evaluateCard(text: string, lines = textToLines(text), pass: 'crop' | 'frame' = 'crop'): Evaluation {
   const { settings, zones } = settingsStore.get();
-  const parsed = parseCard({ text, lines, pass }, { safeWords: zones.map((z) => z.keyword) });
-  const grade = gradeOffer(parsed, settings.grading, zones);
-  return { parsed, grade };
+  return evaluateInput({ text, lines, pass }, settings, zones);
 }
 
-export async function showVerdictOverlay(ev: Evaluation): Promise<boolean> {
+/** Grades a hand-entered offer (Try the grader) with the same market logic as live offers. */
+export function evaluateParsed(parsed: ParsedOffer): Evaluation {
+  const { settings, zones } = settingsStore.get();
+  return gradeParsed(parsed, settings, zones);
+}
+
+/**
+ * Shows the verdict over the driver app. With a card anchor (where the offer card sits on
+ * screen) and the default "card" position, it floats on top of the offer card itself.
+ */
+export async function showVerdictOverlay(ev: Evaluation, anchor?: OverlayAnchor | null): Promise<boolean> {
   if (!appStore.get().overlayAllowed && !refreshOverlayPermission()) return false;
-  const content = buildOverlay(ev.grade, ev.parsed, settingsStore.get().settings.overlay);
+  const content = buildOverlay(ev.grade, ev.parsed, settingsStore.get().settings.overlay, ev.fmt, anchor);
   return ScreenWatcher.showOverlay(content);
 }
 
@@ -210,8 +217,8 @@ async function handleCard(e: CardEventPayload) {
   if (lastKey && lastKey.key === key && ts - lastKey.ts < DEDUP_WINDOW_MS) return;
   lastKey = { key, ts };
 
-  // 1) Verdict first.
-  void showVerdictOverlay(ev);
+  // 1) Verdict first, floating on the offer card where the native layer found it.
+  void showVerdictOverlay(ev, cleanAnchor({ top: e.cardTop, bottom: e.cardBottom }));
 
   // 2) Then bookkeeping.
   tracker.offer(ts, ev.parsed.dropoffArea);
@@ -240,41 +247,3 @@ async function handleCard(e: CardEventPayload) {
   kickSync();
 }
 
-export function toRecord(ev: Evaluation, ts: number, sessionId: number | null): Omit<OfferRecord, 'id' | 'synced'> {
-  const { parsed: p, grade: g } = ev;
-  return {
-    sessionId,
-    ts,
-    platform: p.platform,
-    fare: p.fare,
-    surge: p.surge,
-    surgeIncluded: p.surgeIncluded,
-    total: g.total,
-    pickupMi: p.pickupMi,
-    pickupMin: p.pickupMin,
-    tripMi: p.tripMi,
-    tripMin: p.tripMin,
-    pickupArea: p.pickupArea,
-    dropoffArea: p.dropoffArea,
-    riderRating: p.riderRating,
-    offerType: p.offerType,
-    multiStop: p.multiStop,
-    zoneClass: g.zone.zoneClass,
-    zoneKeyword: g.zone.keyword,
-    effMi: g.effMi,
-    effMin: g.effMin,
-    cost: g.cost,
-    net: g.net,
-    grossPerMile: g.grossPerMile,
-    grossPerHour: g.grossPerHour,
-    netPerMile: g.netPerMile,
-    netPerHour: g.netPerHour,
-    verdict: g.verdict,
-    reason: g.reason,
-    flags: g.flags,
-    confidence: p.confidence,
-    readPath: p.readPath,
-    fallbackFields: p.fallbackFields,
-    rawText: p.rawText,
-  };
-}

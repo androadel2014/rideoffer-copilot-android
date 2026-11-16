@@ -13,7 +13,8 @@
     "verify": "npm run typecheck && npm test && npm run audit:network",
     "build:aab": "eas build --platform android --profile production",
     "build:apk": "eas build --platform android --profile preview",
-    "submit:internal": "eas submit --platform android --profile production --latest"
+    "submit:internal": "eas submit --platform android --profile production --latest",
+    "ios": "expo run:ios"
   },
   "dependencies": {
     "babel-preset-expo": "~54.0.10",

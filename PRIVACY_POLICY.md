@@ -4,7 +4,7 @@ RideOffer Copilot helps rideshare drivers judge ride offers. It is built to keep
 
 **What the app reads.** While you have tapped "Start Watching", the app captures your screen using Android's screen-capture permission. It reads the text on screen on your phone to find ride-offer cards. Screen images are processed in memory and discarded immediately. They are never saved or sent anywhere.
 
-**What the app stores.** For each detected offer, the app keeps the fare, distances, times, the pickup/dropoff area text exactly as shown on the card, ride type, rider rating, the text read from the card, and the computed grade. It also keeps the time spent waiting between offers. Rider names are removed before anything is stored. This information is stored only on your phone, and it is excluded from device backups.
+**What the app stores.** For each detected offer, the app keeps the fare, distances, times, the pickup/dropoff area text exactly as shown on the card, ride type, rider star rating, the currency and market the offer was graded in, the text read from the card, and the computed grade. It also keeps the time spent waiting between offers. Rider names are removed before anything is stored. This information is stored only on your phone, and it is excluded from device backups.
 
 **What the app does not do.** No ads. No analytics. No tracking. No location permission. No accounts. No Accessibility Service. With Sync turned off (the default), the app makes no network connections.
 

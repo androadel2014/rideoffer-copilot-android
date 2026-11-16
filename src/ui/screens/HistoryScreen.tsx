@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { latestSession, listOffers, listWaits } from '../../db/database';
+import { formatFor, recordFormat } from '../../engine/market';
 import { computeTotals, type OfferRecord, type WaitRow } from '../../engine/records';
 import { exportHistory, type ExportKind } from '../../export/exporter';
 import { useStore } from '../../state/createStore';
 import { appStore } from '../../state/appStore';
-import { Button, Card, EmptyState, Notice, SectionLabel, Segmented, Stat, VerdictBadge } from '../components';
-import { fmtDay, fmtDuration, fmtMoney, fmtPerHour, fmtPerMile, fmtTime, platformLabel, startOfToday } from '../format';
+import { settingsStore } from '../../state/settingsStore';
+import { Button, Card, EmptyState, Notice, PageHeader, SectionLabel, Segmented, Stat, VerdictBadge } from '../components';
+import { fmtDay, fmtDuration, fmtMi, fmtMoney, fmtPerHour, fmtPerMile, fmtRating, fmtTime, platformLabel, startOfToday } from '../format';
 import { useNav } from '../navigation';
 import { colors, radius, space, type, verdictColor, zoneColor } from '../theme';
 
@@ -19,6 +21,8 @@ export function HistoryScreen() {
   const nav = useNav();
   const version = useStore(appStore, (s) => s.historyVersion);
   const liveSession = useStore(appStore, (s) => s.sessionId);
+  const home = useStore(settingsStore, (s) => s.settings.market.home);
+  const hf = formatFor(home);
   const [range, setRange] = useState<Range>('today');
   const [view, setView] = useState<View_>('offers');
   const [offers, setOffers] = useState<OfferRecord[]>([]);
@@ -58,7 +62,14 @@ export function HistoryScreen() {
     };
   }, [range, version, liveSession]);
 
-  const totals = useMemo(() => computeTotals(offers, waits), [offers, waits]);
+  // Money averages only make sense in one currency: total the home currency's offers.
+  const homeOffers = useMemo(() => offers.filter((o) => recordFormat(o).currency === hf.currency), [offers, hf.currency]);
+  const otherCurrency = offers.length - homeOffers.length;
+  const totals = useMemo(() => {
+    const t = computeTotals(homeOffers, waits);
+    const all = computeTotals(offers, waits);
+    return { ...t, offers: all.offers, great: all.great, ok: all.ok, bad: all.bad, unreadable: all.unreadable };
+  }, [homeOffers, offers, waits]);
   const rangeQuery = range === 'today' ? { sinceTs: startOfToday() } : range === 'session' ? { sessionId: sessionId ?? -1 } : {};
 
   const doExport = async (kind: ExportKind) => {
@@ -73,7 +84,7 @@ export function HistoryScreen() {
 
   return (
     <View>
-      <Text style={[type.h1, { marginBottom: space(4) }]}>History</Text>
+      <PageHeader kicker="Every offer, graded" title="History" />
       <Segmented
         options={[
           { value: 'today', label: 'Today' },
@@ -100,12 +111,12 @@ export function HistoryScreen() {
             </View>
             <View style={styles.hr} />
             <View style={{ flexDirection: 'row', gap: space(3) }}>
-              <Stat label="Avg net/hr" value={fmtPerHour(totals.avgNetPerHour)} />
-              <Stat label="Avg net/mi" value={fmtPerMile(totals.avgNetPerMile)} />
+              <Stat label="Avg net/hr" value={fmtPerHour(totals.avgNetPerHour, hf)} />
+              <Stat label={`Avg net/${hf.unit}`} value={fmtPerMile(totals.avgNetPerMile, hf)} />
             </View>
             <View style={styles.hr} />
             <View style={{ flexDirection: 'row', gap: space(3) }}>
-              <Stat label="Offered $" value={fmtMoney(totals.sumFares)} hint="Sum of all offers seen" />
+              <Stat label="Offered" value={fmtMoney(totals.sumFares, hf)} hint={otherCurrency ? `${hf.currency} only · ${otherCurrency} in other currencies` : 'Sum of all offers seen'} />
               <Stat label="Waiting" value={fmtDuration(totals.waitSec)} hint={totals.avgWaitSec != null ? `Avg ${fmtDuration(totals.avgWaitSec)}` : undefined} />
             </View>
           </Card>
@@ -179,22 +190,32 @@ function endedByLabel(e: WaitRow['endedBy']) {
 }
 
 function OfferRow({ o, onPress }: { o: OfferRecord; onPress: () => void }) {
+  const f = recordFormat(o);
+  const vc = verdictColor(o.verdict);
+  const totalMi = o.totalMi ?? (o.tripMi != null ? (o.pickupMi ?? 0) + o.tripMi : null);
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={`${o.verdict ?? 'Check'} offer, ${fmtMoney(o.total ?? o.fare)}. Open details`}
+      accessibilityLabel={`${o.verdict ?? 'Check'} offer, ${fmtMoney(o.total ?? o.fare, f)}. Open details`}
       style={({ pressed }) => [styles.row, pressed && { backgroundColor: colors.surfacePressed }]}
     >
+      <View style={[styles.rowBar, { backgroundColor: vc.fg }]} />
       <View style={{ flex: 1, gap: 6 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: space(2) }}>
           <VerdictBadge verdict={o.verdict} size="sm" />
-          <Text style={type.tiny}>
+          <Text style={type.tiny} numberOfLines={1}>
             {fmtTime(o.ts)} · {platformLabel(o.platform)}
             {o.offerType ? ` · ${o.offerType}` : ''}
           </Text>
         </View>
-        <Text style={[type.h3, { fontSize: 19 }]}>{fmtMoney(o.total ?? o.fare)}</Text>
+        <Text style={[type.h3, { fontSize: 19, fontVariant: ['tabular-nums'] }]}>
+          {fmtMoney(o.total ?? o.fare, f)}
+          <Text style={[type.small, { fontWeight: '600' }]}>
+            {totalMi != null ? `  ·  ${fmtMi(totalMi, f)}` : ''}
+            {o.riderRating != null ? `  ·  ★ ${fmtRating(o.riderRating, f)}` : ''}
+          </Text>
+        </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: zoneColor(o.zoneClass) }} />
           <Text style={[type.small, { flex: 1 }]} numberOfLines={1}>
@@ -203,9 +224,9 @@ function OfferRow({ o, onPress }: { o: OfferRecord; onPress: () => void }) {
         </View>
       </View>
       <View style={{ alignItems: 'flex-end', justifyContent: 'center', gap: 2 }}>
-        <Text style={[type.h3, { fontSize: 22, fontVariant: ['tabular-nums'], color: verdictColor(o.verdict).fg }]}>{fmtPerHour(o.netPerHour)}</Text>
-        <Text style={[type.bodyStrong, { fontSize: 18, fontVariant: ['tabular-nums'], color: verdictColor(o.verdict).fg }]}>{fmtPerMile(o.netPerMile)}</Text>
-        <Text style={[type.tiny, { color: colors.accent, marginTop: 4 }]}>Details</Text>
+        <Text style={[type.h3, { fontSize: 22, fontVariant: ['tabular-nums'], color: vc.fg }]}>{fmtPerHour(o.netPerHour, f)}</Text>
+        <Text style={[type.bodyStrong, { fontSize: 17, fontVariant: ['tabular-nums'], color: vc.fg }]}>{fmtPerMile(o.netPerMile, f)}</Text>
+        <Text style={[type.tiny, { color: colors.textTertiary, marginTop: 4 }]}>Details ›</Text>
       </View>
     </Pressable>
   );
@@ -220,9 +241,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     padding: space(4),
+    paddingLeft: space(5),
     gap: space(3),
     minHeight: 96,
+    overflow: 'hidden',
   },
+  rowBar: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4 },
   waitRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: space(3), gap: space(3) },
   waitBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 });

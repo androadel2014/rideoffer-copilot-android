@@ -1,12 +1,20 @@
 import { formatPerHour, formatPerMile } from '../engine/grading';
+import { formatDistance, formatMoney, formatNumber, US_FORMAT, type MoneyFormat } from '../engine/market';
 
-export const fmtMoney = (n: number | null | undefined) => (n == null ? '—' : `$${n.toFixed(2)}`);
+/**
+ * Display helpers. Every money/distance helper takes an optional MoneyFormat (currency,
+ * mi/km, decimal comma); without one it shows US dollars and miles exactly as before.
+ * Distances passed in are always MILES (canonical) and rates are per mile.
+ */
+export const fmtMoney = (n: number | null | undefined, f: MoneyFormat = US_FORMAT) => formatMoney(n, f);
 
-/** Same formatting as the overlay: "$36/hr" and "68¢/mi" (dollars from $1.00/mi up). */
-export const fmtPerMile = (n: number | null | undefined) => formatPerMile(n ?? null);
-export const fmtPerHour = (n: number | null | undefined) => formatPerHour(n ?? null);
-export const fmtMi = (n: number | null | undefined) => (n == null ? '—' : `${n.toFixed(1)} mi`);
+/** Same formatting as the overlay: "$36/hr" and "68¢/mi" (dollars from $1.00/mi up), "€0,44/km". */
+export const fmtPerMile = (n: number | null | undefined, f: MoneyFormat = US_FORMAT) => formatPerMile(n ?? null, f);
+export const fmtPerHour = (n: number | null | undefined, f: MoneyFormat = US_FORMAT) => formatPerHour(n ?? null, f);
+export const fmtMi = (n: number | null | undefined, f: Pick<MoneyFormat, 'unit' | 'decimalComma'> = US_FORMAT) => formatDistance(n, f);
 export const fmtMin = (n: number | null | undefined) => (n == null ? '—' : `${Math.round(n)} min`);
+export const fmtRating = (n: number | null | undefined, f: Pick<MoneyFormat, 'decimalComma'> = US_FORMAT) =>
+  n == null ? '—' : formatNumber(n, 2, f);
 
 export function fmtDuration(sec: number | null | undefined): string {
   if (sec == null || !Number.isFinite(sec)) return '—';

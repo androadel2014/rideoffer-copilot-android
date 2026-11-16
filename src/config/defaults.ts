@@ -1,3 +1,4 @@
+import { DEFAULT_MARKET_SETTINGS, type MarketSettings } from '../engine/market';
 import type { GradingSettings, Zone, ZoneClass } from '../engine/types';
 
 /**
@@ -10,6 +11,11 @@ import type { GradingSettings, Zone, ZoneClass } from '../engine/types';
  * wrong number for a take-it-or-leave-it decision. Raise it for an SUV/XL vehicle.
  *
  * Thresholds are on NET, ALL-IN numbers (pickup leg included, dead-zone penalty applied).
+ *
+ * Since v11 the money fields here (cost and thresholds) are a per-MILE mirror of the
+ * home market's profile (AppSettings.market). Distances in this object (dead-zone
+ * extra miles, long-trip miles, assumed mph) are always stored in miles and shown in
+ * the market's unit by the Settings screen.
  */
 export const DEFAULT_GRADING: GradingSettings = {
   costPerMile: 0.3,
@@ -35,19 +41,28 @@ export interface SyncSettings {
 
 export interface OverlaySettings {
   seconds: number;
-  position: 'top' | 'center';
+  /** "card": float on top of the detected offer card (default). */
+  position: 'card' | 'top' | 'center';
 }
 
+/** Bumped when stored settings need a one-time migration. v1 = up to app vc10. */
+export const SETTINGS_VERSION = 2;
+
 export interface AppSettings {
+  settingsVersion: number;
   grading: GradingSettings;
+  /** Home market, auto-detect switch and per-market cost/threshold profiles. */
+  market: MarketSettings;
   overlay: OverlaySettings;
   driverId: string;
   sync: SyncSettings;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  settingsVersion: SETTINGS_VERSION,
   grading: DEFAULT_GRADING,
-  overlay: { seconds: 7, position: 'top' },
+  market: DEFAULT_MARKET_SETTINGS,
+  overlay: { seconds: 7, position: 'card' },
   driverId: '',
   sync: { enabled: false, baseUrl: '', driverKey: '' },
 };

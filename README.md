@@ -8,12 +8,26 @@ A copilot for Uber/Lyft drivers in the DC metro. Tap **Start Watching** before g
 
 ---
 
+## What's new in versionCode 11
+
+1. **Verdict floats on the offer card.** The native layer already reports where the card sits on screen (`cardTop`/`cardBottom`); the overlay now anchors to the card's top edge, keeps the bottom ~84 dp (Accept) uncovered, and sits just above a card that is too short. While it covers the fare, the card is tracked by its lower part, and the verdict disappears as soon as the card does. Settings → Overlay → Position: **On the offer** (new default), Top, Middle. Drivers who had the old default "Top" are moved to "On the offer" once; "Middle" is kept.
+2. **Start Watching, step 1 of 2: Display over other apps.** A plain-language screen with a preview of the overlay on a card, an **Open system setting** button (`ACTION_MANAGE_OVERLAY_PERMISSION`), and it updates itself when you come back. Step 2 is Android's screen-capture prompt.
+3. **Offer details** shows every parsed field: pay (fare, bonus/surge when present, total), pickup / trip / total distance and time with a proportional bar, dead-zone return, rider star rating, the rate math (with the cost per mi/km actually used), ride, places and read quality.
+4. **Rider rating** is parsed in more layouts (`4,93 ★`, Arabic digits), stored with the offer, shown on the overlay, History and details. A test runs real cards through record → CSV → JSON export → sync batch and fails if a name appears anywhere. Name stripping now also covers accented Latin names (Zoë, José) and Arabic-script names.
+5. **Distances: pickup / trip / total.** `totalMi`/`totalMin` = pickup + trip, stored per offer (DB migration v2 back-fills old rows). Every rate and the verdict use the total (plus the dead-zone return when it applies). A card "Total" line is read separately; it fills in a missing leg, and a card that only shows a total is graded on it.
+6. **International.** Currency is detected from the card ($, US$, CA$, €, £, E£/EGP/ج.م, SAR, AED, ₹, R$, zł, ₺ …, before or after the amount); km is converted to miles internally; decimal commas (`12,50`, `1.234,50`) and Arabic-Indic digits (`١٢٫٥٠`) are read. Settings → Market and currency: home market (23 markets), auto-detect, and editable per-market cost and GREAT/BAD thresholds in that market's currency and unit. US defaults are unchanged (GREAT ≥ $1.25/mi and ≥ $30/hr; BAD < $0.80/mi or < $18/hr); other markets start from those converted at approximate exchange rates (`src/engine/market.ts`, `perUsd`), rounded to two significant figures. Treat them as starting points.
+7. **Design.** Rebuilt dark theme (layered surfaces, hairline borders, one accent, verdict colours reserved for verdicts), new tab icons, readiness checklist on Watch, refreshed overlay card (rating chip, total line).
+
+Version: `versionCode 11` in `app.json` and as the default in the Gradle file / signing plugin. `ROC_VERSION_CODE` (CI run number) and EAS remote auto-increment still override it, as before. `versionName` stays 1.0.0.
+
+---
+
 ## 1. Build and run
 
 ```bash
 npm install
 npx expo install --fix          # aligns Expo package patch versions with the SDK
-npm run verify                  # typecheck + 35 unit tests + network/privacy audit
+npm run verify                  # typecheck + 66 unit tests + network/privacy audit
 npx expo run:android            # dev build on a USB-connected phone (needs Android SDK + JDK 17)
 ```
 
@@ -59,7 +73,7 @@ The app uses a custom native module, so **it does not run in Expo Go.** Use a de
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Why the split.** Kotlin does the work that must be native and fast: capture, OCR, card detection, cropping and the overlay window. All decisions (parsing, grading, privacy, waits, storage) are pure TypeScript in `src/engine`, `src/ocr` and `src/privacy`. Those folders have no React Native imports, so they are unit-tested in plain Node (`tests/`, 35 tests).
+**Why the split.** Kotlin does the work that must be native and fast: capture, OCR, card detection, cropping and the overlay window. All decisions (parsing, grading, privacy, waits, storage) are pure TypeScript in `src/engine`, `src/ocr` and `src/privacy`. Those folders have no React Native imports, so they are unit-tested in plain Node (`tests/`, 66 tests).
 
 **Latency.** The overlay is drawn before the offer is written to SQLite, so storage and sync can never delay the verdict. Card detection runs on the full frame. Only a new card triggers the second OCR pass on the crop. Identical frames skip OCR entirely.
 
@@ -207,7 +221,7 @@ Plausibility checks include fare $2.50–$800, pickup ≤ 30 mi, and speed 3–8
 
 ## 9. What still needs on-device testing (honest list)
 
-I could not run an Android device or emulator, or compile Kotlin, in the build environment. The TypeScript engine is covered by 35 passing unit tests. The items below need checking on a real phone before rollout; CI's `android-compile` job checks the native code compiles.
+I could not run an Android device or emulator, or compile Kotlin, in the build environment. The TypeScript engine is covered by 66 passing unit tests. The items below need checking on a real phone before rollout; CI's `android-compile` job checks the native code compiles.
 
 1. **Real Uber Driver and Lyft Driver cards.** The parser was built from typical card layouts (fixtures in `tests/fixtures.ts`). Capture real cards with the app's own History → raw text view, then tune `TEMPLATES`, the fixtures and the keywords in `OfferDetector.kt`.
 2. **FLAG_SECURE.** If a driver app marks its offer screen as secure, Android returns black frames to every screen recorder and nothing can be read. Check this first. Every card would then log nothing, and there is no allowed workaround.
@@ -219,3 +233,5 @@ I could not run an Android device or emulator, or compile Kotlin, in the build e
 8. **Battery and heat** over a full shift. Tune `FRAME_INTERVAL_MS` (600 ms) and the capture resolution (≤1080 px short edge) if needed.
 9. **Zero-network proof on device.** Run a shift with Sync off under PCAPdroid or Android's per-app data usage and confirm zero bytes.
 10. **The first Play upload** (manual) and the foreground-service declaration review.
+11. **On-card overlay placement** on several screen sizes for both Uber and Lyft cards: it should cover the card's top, never the Accept button, and leave when the card leaves (accept, decline, timeout).
+12. **Arabic-script cards.** The bundled ML Kit recognizer reads Latin script only. Cards that use Western digits and Latin currency codes work; Arabic words and Arabic-Indic digits on screen will not be recognized by OCR even though the parser handles them (they work in "Try the grader" and if a future recognizer outputs them). Check a real Arabic-UI card before relying on it.

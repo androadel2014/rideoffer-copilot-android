@@ -57,6 +57,17 @@ const MIGRATIONS: string[] = [
     sort INTEGER NOT NULL DEFAULT 0
   );
   `,
+  // v2 (app v11): total distance/time, and the currency/unit/market each offer was graded in.
+  // Existing rows keep NULL here and are shown as US dollars and miles.
+  `
+  ALTER TABLE offers ADD COLUMN total_mi REAL;
+  ALTER TABLE offers ADD COLUMN total_min REAL;
+  ALTER TABLE offers ADD COLUMN currency TEXT;
+  ALTER TABLE offers ADD COLUMN distance_unit TEXT;
+  ALTER TABLE offers ADD COLUMN market TEXT;
+  UPDATE offers SET total_mi = COALESCE(pickup_mi, 0) + trip_mi WHERE trip_mi IS NOT NULL;
+  UPDATE offers SET total_min = COALESCE(pickup_min, 0) + trip_min WHERE trip_min IS NOT NULL;
+  `,
 ];
 
 export function getDb(): Promise<SQLite.SQLiteDatabase> {
@@ -160,10 +171,15 @@ function mapOffer(r: OfferDbRow): OfferRecord {
     pickupMin: r.pickup_min,
     tripMi: r.trip_mi,
     tripMin: r.trip_min,
+    totalMi: r.total_mi ?? null,
+    totalMin: r.total_min ?? null,
     pickupArea: r.pickup_area,
     dropoffArea: r.dropoff_area,
     riderRating: r.rider_rating,
     offerType: r.offer_type,
+    currency: r.currency ?? null,
+    distanceUnit: r.distance_unit === 'km' ? 'km' : r.distance_unit === 'mi' ? 'mi' : null,
+    market: r.market ?? null,
     multiStop: !!r.multi_stop,
     zoneClass: (r.zone_class ?? 'neutral') as ZoneClass,
     zoneKeyword: r.zone_keyword,
@@ -194,14 +210,16 @@ export async function insertOffer(o: Omit<OfferRecord, 'id' | 'synced'>): Promis
       pickup_mi, pickup_min, trip_mi, trip_min, pickup_area, dropoff_area, rider_rating, offer_type,
       multi_stop, zone_class, zone_keyword, eff_mi, eff_min, cost, net,
       gross_per_mile, gross_per_hour, net_per_mile, net_per_hour,
-      verdict, reason, flags, confidence, read_path, fallback_fields, raw_text, synced
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
+      verdict, reason, flags, confidence, read_path, fallback_fields, raw_text, synced,
+      total_mi, total_min, currency, distance_unit, market
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)`,
     [
       o.sessionId, o.ts, o.platform, o.fare, o.surge, o.surgeIncluded ? 1 : 0, o.total,
       o.pickupMi, o.pickupMin, o.tripMi, o.tripMin, o.pickupArea, o.dropoffArea, o.riderRating, o.offerType,
       o.multiStop ? 1 : 0, o.zoneClass, o.zoneKeyword, o.effMi, o.effMin, o.cost, o.net,
       o.grossPerMile, o.grossPerHour, o.netPerMile, o.netPerHour,
       o.verdict, o.reason, JSON.stringify(o.flags), o.confidence, o.readPath, JSON.stringify(o.fallbackFields), o.rawText,
+      o.totalMi ?? null, o.totalMin ?? null, o.currency ?? null, o.distanceUnit ?? null, o.market ?? null,
     ]
   );
   return Number(r.lastInsertRowId);
