@@ -16,6 +16,7 @@
     "submit:internal": "eas submit --platform android --profile production --latest"
   },
   "dependencies": {
+    "babel-preset-expo": "~54.0.10",
     "expo": "~54.0.0",
     "expo-build-properties": "~1.0.9",
     "expo-file-system": "~19.0.17",

@@ -78,3 +78,4 @@ jobs:
           gh release view ci-builds >/dev/null 2>&1 || gh release create ci-builds --title "CI builds" --notes "Rolling CI build assets"
           gh release upload ci-builds android/app/build/outputs/bundle/release/app-release.aab --clobber
       # NOTE: Play Console upload is intentionally NOT done in CI (done manually).
+      # Fix 2026-11-15: babel-preset-expo added to devDependencies (release bundle).
