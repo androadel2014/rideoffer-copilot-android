@@ -1,5 +1,8 @@
 name: Release AAB (Google Play internal testing)
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -50,25 +53,26 @@ jobs:
       - run: npm test && npm run audit:network
       - run: npx expo prebuild --platform android --clean --no-install
       - name: Decode upload keystore
-        run: echo '${{ secrets.UPLOAD_KEYSTORE_BASE64 }}' | base64 -d > "$RUNNER_TEMP/upload.jks"
+        run: echo '${{ secrets.KEYSTORE_BASE64 }}' | base64 -d > "$RUNNER_TEMP/upload.jks"
       - name: Build signed AAB
         working-directory: android
         env:
           ROC_UPLOAD_STORE_FILE: ${{ runner.temp }}/upload.jks
-          ROC_UPLOAD_STORE_PASSWORD: ${{ secrets.UPLOAD_STORE_PASSWORD }}
-          ROC_UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
-          ROC_UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
-          ROC_VERSION_CODE: ${{ github.run_number }}
+          ROC_UPLOAD_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          ROC_UPLOAD_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          ROC_UPLOAD_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew :app:bundleRelease --no-daemon
+      # Account Actions artifact storage is at 100% quota — keep non-fatal
+      # (same workaround as the Fakarny repo) and publish via release asset.
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: rideoffer-release-aab
           path: android/app/build/outputs/bundle/release/*.aab
-      - name: Upload to Google Play (internal)
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
-          packageName: com.rideoffercopilot.android
-          releaseFiles: android/app/build/outputs/bundle/release/*.aab
-          track: internal
-          status: completed
+      - name: Publish AAB as release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view ci-builds >/dev/null 2>&1 || gh release create ci-builds --title "CI builds" --notes "Rolling CI build assets"
+          gh release upload ci-builds android/app/build/outputs/bundle/release/app-release.aab --clobber
+      # NOTE: Play Console upload is intentionally NOT done in CI (done manually).
