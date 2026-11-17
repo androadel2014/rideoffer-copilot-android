@@ -107,14 +107,11 @@ import path from 'node:path';
 const NATIVE = path.resolve(__dirname, '../../modules/screen-watcher/android/src/main/java/com/rideoffercopilot/screenwatcher');
 const kt = (f: string) => readFileSync(path.join(NATIVE, f), 'utf8');
 
-test('vc12 native: verdict is bound to its on-screen card and removed when the card goes', () => {
-  const fp = kt('FrameProcessor.kt');
-  assert.match(fp, /"cardSeq" to seq/, 'onCard event carries the card sequence number');
-  assert.match(fp, /cardLooksGone\(frame\)\) endCard\(\)/, 'pixel gone-check runs on every frame before OCR');
-  assert.match(fp, /OverlayController\.hideForCard\(seq\)/, 'card gone removes its verdict');
-  const ov = kt('OverlayController.kt');
-  assert.match(ov, /!CardPresence\.isActive\(seq\)\) return false/, 'a verdict for a closed card is never drawn');
-  assert.match(kt('ScreenWatchService.kt'), /FAST_FRAME_INTERVAL_MS = 150L/);
+test('vc12 native: per-card verdict identity (cardSeq) is still wired end to end', () => {
+  // vc13 replaced vc12's "clear when the card goes" binding (owner: the verdict stays until
+  // he dismisses it); the per-card identity stays. See tests/v13.test.ts for vc13 guards.
+  assert.match(kt('FrameProcessor.kt'), /"cardSeq" to seq/, 'onCard event carries the card sequence number');
+  assert.match(kt('OverlayController.kt'), /!CardPresence\.isLatest\(seq\)\) return false/);
   const wc = readFileSync(path.resolve(__dirname, '../../src/state/watchController.ts'), 'utf8');
   assert.match(wc, /showVerdictOverlay\(ev, anchor, cardSeq\)/, 'JS sends the cardSeq back with the verdict');
 });

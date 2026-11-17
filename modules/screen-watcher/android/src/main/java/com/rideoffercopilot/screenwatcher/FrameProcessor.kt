@@ -14,24 +14,27 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * Runs on the capture thread. For each frame:
- *  1. Skip OCR if the screen is visually unchanged (cheap 16x32 luminance diff).
- *  2. On-device OCR of the whole frame (ML Kit, bundled model).
- *  3. Drop any text that sits under our own overlay (we must never read ourselves).
- *  4. If an offer card is present and new: crop the card, upscale, OCR the crop again
- *     for a cleaner read, and emit the card lines (normalized to the card box) to JS.
- *  5. Classify the screen (offer / trip / idle / other) and emit debounced changes,
- *     which drive the wait-time tracker.
+ * Runs on the capture thread, once per new screen frame (frames are event-driven since
+ * vc13: the service reacts to each frame the moment the system delivers it).
  *
- * vc12 timing (verdict WHILE the card is up, gone within ~0.5 s after it closes):
- *  - Each emitted card gets a sequence number (CardPresence) and a luminance snapshot of
- *    its box. While it is up, frames are grabbed every ~150 ms and compared with that
- *    snapshot (no OCR). When most of the box changes, the card is gone: the overlay is
- *    removed immediately and the next frame is read for a new card.
- *  - While a card is up, OCR only runs every few seconds (to re-confirm it by its lower
- *    part), so it cannot block the gone-check.
- *  - A card that is still sliding in (fare already readable) is re-read on the next
- *    frame instead of waiting for the normal cadence or the static-frame skip.
+ * vc13 FAST PATH: a request card shown within ~1 s
+ *  1. CardLocator finds the Accept/Match button by its pixels (a few ms, no OCR).
+ *  2. Once the button holds still for two frames (the card has finished sliding in),
+ *     only the card panel above it is OCR'd, in ONE pass, and those lines are emitted
+ *     to JS straight away. JS parses fare, total time and total distance, grades, and
+ *     draws the verdict before doing any bookkeeping.
+ *  3. If our own persistent verdict covers part of the new card, it is hidden for one
+ *     frame so the card can be read, then replaced by the new card's verdict (or put
+ *     back if no new card was read).
+ *
+ * vc12 SLOW PATH (kept as the fallback for cards the locator does not recognise):
+ *  full-frame OCR at most every 600 ms, static frames skipped, then a crop re-read of the
+ *  detected card. vc12 ran ONLY this path, and that was the delay: see README.
+ *
+ * Card presence: after a card is emitted, a luminance snapshot of its box is compared
+ * with every new frame (no OCR). When most of it changes the card has gone, and the next
+ * card is treated as new. vc13: this no longer touches the verdict, which stays until the
+ * driver dismisses it.
  *
  * No pixels ever leave this class: only recognized text is emitted, and the frame
  * bitmap is recycled immediately.
@@ -53,66 +56,59 @@ internal class FrameProcessor(
   private var emittedState = ""
   @Volatile private var closed = false
 
-  // vc12: the card currently on screen.
+  // The card currently on screen.
   private var activeSeq = 0L
+  private var lastEmittedSeq = 0L
   private var activeRect: Rect? = null
   private var activeRef: IntArray? = null
   private var ocrMisses = 0
   private var candidateUntil = 0L
-  /** Card that just left: not re-emitted while it is still sliding out. */
-  private var goneFareKey: String? = null
-  private var goneAt = 0L
 
-  /** True while a card is up (or sliding in): the service grabs frames at the fast cadence. */
+  // vc13 fast path.
+  private var lastButton: Rect? = null
+  private var lastFastReadAt = 0L
+  private var suspendRequested = false
+  private var failedButton: Rect? = null
+  private var failedAt = 0L
+
+  /** True while a card is up or arriving: the service handles frames at the fast rate. */
   val fastMode: Boolean
-    get() = activeSeq != 0L || SystemClock.elapsedRealtime() < candidateUntil
+    get() = activeSeq != 0L || lastButton != null || SystemClock.elapsedRealtime() < candidateUntil
 
   fun process(frame: Bitmap) {
     try {
       if (closed) return
       val now = SystemClock.elapsedRealtime()
-      // vc12: cheap card-gone check on every new frame, before any OCR.
-      if (activeSeq != 0L && cardLooksGone(frame)) endCard()
+
+      // A) Is the emitted card still there? (pixels only; never clears the verdict)
+      var contentChanged = false
+      if (activeSeq != 0L) {
+        val f = changedFraction(frame)
+        if (f >= GONE_FRACTION) endCard() else if (f >= CONTENT_CHANGE) contentChanged = true
+      }
+
+      // B) vc13 fast path.
+      if (fastPath(frame, now, contentChanged)) return
+
+      // C) vc12 slow path: full-frame OCR, for cards the locator does not recognise.
       val thumb = thumbnail(frame)
       val diff = prevThumb?.let { meanAbsDiff(it, thumb) } ?: Double.MAX_VALUE
       prevThumb = thumb
       if (activeSeq != 0L) {
-        // A card is up: only re-confirm it now and then; the pixel check above handles "gone".
         if (now - lastOcrAt < ACTIVE_FORCE_OCR_MS) return
       } else {
         val sliding = now < candidateUntil
+        if (now - lastOcrAt < (if (sliding) SLIDING_OCR_GAP_MS else SLOW_OCR_GAP_MS)) return
         if (!sliding && diff < STATIC_DIFF && now - lastOcrAt < FORCE_OCR_MS) return
       }
       lastOcrAt = now
 
       val text = recognize(frame) ?: return
-      val exclude = overlayRectInCapture()
-      val lines = toLines(text).filter { exclude == null || !Rect.intersects(exclude, it.rect) }
+      val lines = visible(toLines(text, 0, 0))
 
       val card = OfferDetector.detect(lines, frame.width, frame.height)
       if (card != null) {
-        candidateUntil = 0L
-        ocrMisses = 0
-        val continuouslyVisible = lastSignature != null && now - lastCardSeenAt < CARD_GONE_MS
-        lastCardSeenAt = now
-        val isJitterOfSameCard = continuouslyVisible && card.fareKey == lastFareKey && now - lastEmitAt < SAME_CARD_WINDOW_MS
-        val slidingOut = card.fareKey == goneFareKey && now - goneAt < REAPPEAR_BLOCK_MS
-        if (slidingOut) {
-          // The card that just left, caught mid-animation. Look again shortly; if it is
-          // really still there it is emitted once the block ends.
-          candidateUntil = now + CANDIDATE_MS
-        } else if (card.signature != lastSignature && !isJitterOfSameCard) {
-          emitCard(frame, card, lines)
-          lastEmitAt = now
-          lastFareKey = card.fareKey
-          lastSignature = card.signature
-        } else {
-          if (activeSeq != 0L) {
-            // Same card re-confirmed: refresh its snapshot (slow countdown animations).
-            activeRect?.let { activeRef = sampleBox(frame, it) }
-          }
-          lastSignature = card.signature
-        }
+        onCardDetected(frame, card, lines, now, fromFast = false)
       } else {
         val r = activeRect
         if (activeSeq != 0L && r != null) {
@@ -136,15 +132,131 @@ internal class FrameProcessor(
   fun close() {
     closed = true
     if (activeSeq != 0L) endCard()
+    if (suspendRequested) OverlayController.resumeAfterRead()
     try { recognizer.close() } catch (_: Throwable) {}
+  }
+
+  // --- vc13 fast path ---------------------------------------------------------------------
+
+  /** Returns true when this frame was handled here (the slow path is skipped). */
+  private fun fastPath(frame: Bitmap, now: Long, contentChanged: Boolean): Boolean {
+    val ex = overlayRectInCapture()
+    val btn = CardLocator.findAcceptButton(frame, ex)
+    if (btn == null) {
+      lastButton = null
+      if (suspendRequested) {
+        suspendRequested = false
+        OverlayController.resumeAfterRead()
+      }
+      return false
+    }
+    val prev = lastButton
+    lastButton = btn
+    val tol = (frame.height * 0.006f).toInt().coerceAtLeast(3)
+    val stable = prev != null && Math.abs(prev.top - btn.top) <= tol && Math.abs(prev.bottom - btn.bottom) <= tol
+    if (!stable) {
+      // The card is still sliding in: read it as soon as it settles (next frame or two).
+      candidateUntil = now + CANDIDATE_MS
+      return true
+    }
+    // The emitted card is still up and unchanged: nothing to read.
+    if (activeSeq != 0L && !contentChanged) return true
+    if (now - lastFastReadAt < FAST_RETRY_MS) return true
+    // A coloured bar that is not a request (e.g. an in-trip slider): leave it to the slow path.
+    val fb = failedButton
+    if (fb != null && now - failedAt < FAILED_BACKOFF_MS && Math.abs(fb.top - btn.top) <= tol && Math.abs(fb.bottom - btn.bottom) <= tol) return false
+
+    val region = CardLocator.cardRegion(frame, btn)
+    // Our persistent verdict covers part of this card: hide it for one read.
+    if (ex != null && Rect.intersects(ex, region)) {
+      if (!suspendRequested) {
+        suspendRequested = true
+        OverlayController.suspendForRead()
+      }
+      return true
+    }
+    val suspendedAt = OverlayController.suspendedAt
+    if (suspendedAt != 0L && now - suspendedAt < SUSPEND_SETTLE_MS) return true
+
+    lastFastReadAt = now
+    lastOcrAt = now
+    val lines = readRegion(frame, region)
+    val card = if (lines.isEmpty()) null else OfferDetector.detect(lines, frame.width, frame.height)
+    val emitted = card != null && onCardDetected(frame, card, lines, now, fromFast = true)
+    if (suspendRequested) {
+      suspendRequested = false
+      // A new verdict replaces the hidden one; otherwise put it back.
+      if (!emitted) OverlayController.resumeAfterRead()
+    }
+    if (card == null) {
+      failedButton = Rect(btn)
+      failedAt = now
+      return false
+    }
+    failedButton = null
+    updateState("offer")
+    return true
+  }
+
+  /** OCR of just the card panel, one pass; lines in frame coordinates. */
+  private fun readRegion(frame: Bitmap, region: Rect): List<OcrLine> {
+    val r = Rect(region)
+    if (!r.intersect(0, 0, frame.width, frame.height) || r.width() < 10 || r.height() < 10) return emptyList()
+    var crop: Bitmap? = null
+    return try {
+      crop = Bitmap.createBitmap(frame, r.left, r.top, r.width(), r.height())
+      val t = recognize(crop!!) ?: return emptyList()
+      visible(toLines(t, r.left, r.top))
+    } catch (_: Throwable) {
+      emptyList()
+    } finally {
+      if (crop != null && crop !== frame) try { crop.recycle() } catch (_: Throwable) {}
+    }
   }
 
   // --- Card emission ----------------------------------------------------------------------
 
-  private fun emitCard(frame: Bitmap, card: DetectedCard, frameLines: List<OcrLine>) {
+  /** Returns true when the card was emitted to JS as a new card. */
+  private fun onCardDetected(frame: Bitmap, card: DetectedCard, lines: List<OcrLine>, now: Long, fromFast: Boolean): Boolean {
+    candidateUntil = 0L
+    ocrMisses = 0
+    lastCardSeenAt = now
+    val sameCard = (card.fareKey == lastFareKey && now - lastEmitAt < SAME_CARD_WINDOW_MS) || card.signature == lastSignature
+    if (sameCard) {
+      // A re-read of the card we already emitted: track it again, never re-emit it.
+      if (activeSeq == 0L && lastEmittedSeq != 0L) activeSeq = lastEmittedSeq
+      val r = Rect(card.rect)
+      if (r.intersect(0, 0, frame.width, frame.height)) {
+        activeRect = r
+        activeRef = sampleBox(frame, r)
+      }
+      lastSignature = card.signature
+      return false
+    }
+    val ok = if (fromFast) emitFromLines(frame, card, lines) else emitCard(frame, card, lines)
+    if (ok) {
+      lastEmitAt = now
+      lastFareKey = card.fareKey
+    }
+    lastSignature = card.signature
+    return ok
+  }
+
+  /** vc13 fast path: the card panel was already OCR'd on its own; emit those lines as-is. */
+  private fun emitFromLines(frame: Bitmap, card: DetectedCard, lines: List<OcrLine>): Boolean {
+    val r = Rect(card.rect)
+    if (!r.intersect(0, 0, frame.width, frame.height) || r.width() < 10 || r.height() < 10) return false
+    val cardLines = lines.filter { Rect.intersects(r, it.rect) }
+    if (cardLines.isEmpty()) return false
+    publish(frame, r, cardLines, r.left, r.top, r.width().toFloat(), r.height().toFloat(), "crop")
+    return true
+  }
+
+  /** vc12 slow path: crop the detected card from the full frame and read it again. */
+  private fun emitCard(frame: Bitmap, card: DetectedCard, frameLines: List<OcrLine>): Boolean {
     val r = Rect(card.rect)
     r.intersect(0, 0, frame.width, frame.height)
-    if (r.width() < 10 || r.height() < 10) return
+    if (r.width() < 10 || r.height() < 10) return false
 
     var pass = "crop"
     var cardLines: List<OcrLine> = emptyList()
@@ -158,7 +270,7 @@ internal class FrameProcessor(
       scaled = if (up != 1f) Bitmap.createScaledBitmap(crop, (r.width() * up).toInt(), (r.height() * up).toInt(), true) else crop
       val t = recognize(scaled!!)
       if (t != null) {
-        cardLines = toLines(t)
+        cardLines = toLines(t, 0, 0)
         normW = scaled.width.toFloat()
         normH = scaled.height.toFloat()
       }
@@ -180,15 +292,26 @@ internal class FrameProcessor(
       normW = r.width().toFloat()
       normH = r.height().toFloat()
     }
-    if (cardLines.isEmpty()) return
+    if (cardLines.isEmpty()) return false
+    publish(frame, r, cardLines, offsetX, offsetY, normW, normH, pass)
+    return true
+  }
 
-    // vc12: this card is now the one on screen. A card it replaces loses its verdict.
-    if (activeSeq != 0L) {
-      CardPresence.end(activeSeq)
-      OverlayController.hideForCard(activeSeq)
-    }
+  /** Starts a new card (new cardSeq) and sends its lines, normalized to the card box, to JS. */
+  private fun publish(
+    frame: Bitmap,
+    r: Rect,
+    cardLines: List<OcrLine>,
+    offsetX: Int,
+    offsetY: Int,
+    normW: Float,
+    normH: Float,
+    pass: String,
+  ) {
+    if (activeSeq != 0L) CardPresence.end(activeSeq)
     val seq = CardPresence.begin()
     activeSeq = seq
+    lastEmittedSeq = seq
     activeRect = Rect(r)
     activeRef = sampleBox(frame, r)
     ocrMisses = 0
@@ -220,9 +343,9 @@ internal class FrameProcessor(
     )
   }
 
-  // --- vc12: card presence ----------------------------------------------------------------
+  // --- Card presence ----------------------------------------------------------------------
 
-  /** The card left the screen: remove its verdict now and read the next frame for a new card. */
+  /** The card left the screen. The verdict stays (vc13); the next card is treated as new. */
   private fun endCard() {
     val seq = activeSeq
     activeSeq = 0L
@@ -230,11 +353,7 @@ internal class FrameProcessor(
     activeRef = null
     ocrMisses = 0
     CardPresence.end(seq)
-    OverlayController.hideForCard(seq)
-    goneFareKey = lastFareKey
-    goneAt = SystemClock.elapsedRealtime()
     lastSignature = null
-    lastFareKey = null
     lastOcrAt = 0L
   }
 
@@ -254,10 +373,10 @@ internal class FrameProcessor(
     return out
   }
 
-  /** Most of the card box looks different from the card's snapshot → the card is gone. */
-  private fun cardLooksGone(b: Bitmap): Boolean {
-    val r = activeRect ?: return false
-    val ref = activeRef ?: return false
+  /** Share of the card box that differs from the card's snapshot (0 when unknown). */
+  private fun changedFraction(b: Bitmap): Double {
+    val r = activeRect ?: return 0.0
+    val ref = activeRef ?: return 0.0
     val ex = overlayRectInCapture()
     var valid = 0
     var changed = 0
@@ -269,8 +388,8 @@ internal class FrameProcessor(
       valid++
       if (Math.abs(lum(b, x, y) - ref[i]) > CELL_CHANGE) changed++
     }
-    if (valid < MIN_VALID_CELLS) return false
-    return changed >= valid * GONE_FRACTION
+    if (valid < MIN_VALID_CELLS) return 0.0
+    return changed.toDouble() / valid
   }
 
   private fun lum(b: Bitmap, x: Int, y: Int): Int {
@@ -303,16 +422,23 @@ internal class FrameProcessor(
     }
   }
 
-  private fun toLines(text: Text): List<OcrLine> {
+  /** OCR lines, shifted by (dx, dy) into frame coordinates. */
+  private fun toLines(text: Text, dx: Int, dy: Int): List<OcrLine> {
     val out = ArrayList<OcrLine>()
     for (block in text.textBlocks) {
       for (line in block.lines) {
         val box = line.boundingBox ?: continue
         val s = line.text.trim()
-        if (s.isNotEmpty()) out.add(OcrLine(s, box))
+        if (s.isNotEmpty()) out.add(OcrLine(s, Rect(box.left + dx, box.top + dy, box.right + dx, box.bottom + dy)))
       }
     }
     return out
+  }
+
+  /** Drops any text under our own overlay: we must never read ourselves. */
+  private fun visible(lines: List<OcrLine>): List<OcrLine> {
+    val exclude = overlayRectInCapture() ?: return lines
+    return lines.filter { !Rect.intersects(exclude, it.rect) }
   }
 
   private fun thumbnail(b: Bitmap): IntArray {
@@ -346,14 +472,21 @@ internal class FrameProcessor(
     private const val SAME_CARD_WINDOW_MS = 20_000L
     private const val STATE_DEBOUNCE_FRAMES = 2
     private const val OCR_TIMEOUT_S = 4L
-    // vc12 card presence
+    // Slow path pacing (frames are event-driven since vc13; this keeps OCR at vc12's rate).
+    private const val SLOW_OCR_GAP_MS = 600L
+    private const val SLIDING_OCR_GAP_MS = 150L
+    // Card presence
     private const val ACTIVE_FORCE_OCR_MS = 3_000L
     private const val CANDIDATE_MS = 2_000L
-    private const val REAPPEAR_BLOCK_MS = 1_500L
     private const val GRID_COLS = 12
     private const val GRID_ROWS = 16
     private const val CELL_CHANGE = 40
     private const val GONE_FRACTION = 0.5
+    private const val CONTENT_CHANGE = 0.15
     private const val MIN_VALID_CELLS = 24
+    // vc13 fast path
+    private const val FAST_RETRY_MS = 500L
+    private const val SUSPEND_SETTLE_MS = 90L
+    private const val FAILED_BACKOFF_MS = 3_000L
   }
 }

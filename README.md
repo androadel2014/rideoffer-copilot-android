@@ -8,6 +8,45 @@ A copilot for Uber/Lyft drivers in the DC metro. Tap **Start Watching** before g
 
 ---
 
+## What's new in versionCode 13 (owner field test of vc12)
+
+The owner's words: the verdict must appear the moment the request arrives, stay visible until he swipes it away or closes it, and never interfere with closing or accepting the Uber/Lyft request underneath. He also asked for gross and net side by side. The grading engine (`src/engine/*`) is byte-identical to vc12. Detection is still screen capture + on-device OCR, with **no Accessibility service** (project rule and Play policy, confirmed by the owner for this round).
+
+### 1. Instant verdict (target ≤ 1 s from the card appearing)
+**What caused vc12's 5–7 s delay.** vc12 had only one detection path, a polled, full-screen, two-pass OCR pipeline, all on one capture thread:
+- frames were **polled every 600 ms**, and a frame that looked static was skipped for up to 2.5 s;
+- each polled frame was **OCR'd whole** (≈1080 × 2340 px), including every map label ("Bethesda", "Reston"…). This is the single most expensive step;
+- the first frame caught is usually the card **mid slide-in**, which fails detection, so a second full-screen OCR is needed on a later frame;
+- the detected card was then **cropped and OCR'd again** before anything reached JS.
+
+Each request therefore paid two or three full OCR passes back to back, plus the poll wait, before JS could grade it. That adds up to the observed 5–7 s.
+
+**vc13 pipeline.**
+- **Event-driven frames** (`ScreenWatchService`): an `ImageReader` availability listener reacts to each new screen frame as the system delivers it (every 60–100 ms at most) instead of polling. The 600 ms loop remains only as a safety net.
+- **Pixel locator, no OCR** (`CardLocator.kt`): finds the Accept/Match button as a wide band of one saturated colour in the lower screen, in a few ms. Then it follows the card's side margin upward to find the card's top. Validated on the owner's real screenshot: button (88, 1808)–(960, 1958), card top 906 px (true edge ≈ 900).
+- **One OCR pass, card only**: once the button holds still for two frames (the card has settled), only the card panel is OCR'd, once, and the lines go straight to JS. JS parses fare, total time and total distance, grades, and draws the verdict before any logging.
+- If the previous verdict is still on screen and covers part of the new card, it is hidden for that one read (≈ 100 ms), then replaced by the new card's verdict (or put back after 2.5 s if no new card was read).
+- Cards the locator doesn't recognise (other button colours, a dark theme without a coloured button) still go through the vc12 full-screen path, now paced at most every 600 ms.
+- Estimated budget: card settles → ≤ 100 ms to the next frame → ≤ 100 ms to confirm it is still → one OCR pass on the card only (≈ 150–350 ms) → JS grading and draw (≈ 50–100 ms). **Not yet measured on a phone (see §9).**
+
+### 2. Persistent verdict
+A live verdict now stays on screen until the driver closes it or a newer request's verdict replaces it. Accepting, declining or the request timing out no longer clears it, and there is no timer on live verdicts. Previews (Try the grader, Settings) keep the overlay-seconds timer. Per-card identity stays: a verdict for an older card can never replace a newer card's verdict (`CardPresence.isLatest`). The capture loop still notices when a card leaves, but only to treat the next card as new.
+
+### 3. Non-blocking overlay
+**Cause in vc12:** the verdict window already had `FLAG_NOT_TOUCHABLE`, but it was drawn at window opacity 1.0. Since Android 12 the system **drops** touches that pass through another app's overlay more opaque than `InputManager.maximumObscuringOpacityForTouch` (0.8). So taps on Uber's ✕ or Accept under the verdict never arrived.
+**Fix:** the verdict window's opacity is kept just under that limit, so every touch on the verdict passes through to Uber/Lyft. The only touchable area is a separate 48 dp **✕ handle** at the verdict's top-right: tap it to close the verdict, or drag it sideways to swipe the verdict away (the verdict follows the finger; release past 60 dp dismisses it, short drags snap back).
+
+### 4. Gross and net side by side
+Under each big NET figure the overlay now shows the GROSS figure for the same unit, labelled ("GROSS / HOUR $22/hr", "GROSS / MILE 60¢/mi"), plus one line: "Net = after $0.30/mi car cost". The numbers are the engine's own `grossPerHour/grossPerMile/netPerHour/netPerMile` (`src/state/grossNet.ts`, outside the engine). The verdict is still graded on net.
+
+### Regression fixtures (must grade BAD)
+- (a) `VC12_TOTAL_LINE_CARD`: 22 min / 7.8 mi → net $5.79 → $15.79/hr, $0.74/mi → BAD.
+- (b) `VC13_UBERX_EXCLUSIVE_REAL` (the owner's screenshot): $19.06, total 51 min / 31.9 mi (pickup 10 min / 3.1 mi + 1 stop + trip 41 min / 28.8 mi), ★4.90 → cost $9.57 → net $9.49 → $11.16/hr, $0.30/mi → BAD. It is graded on the total line, not either leg.
+
+Version: `versionCode 13` (versionName unchanged). Tests: 82. The vc12 native guard that asserted "verdict clears when the card goes" was replaced, because that behaviour was removed on purpose. The native files were type-checked against Android API stubs; the real compile is CI's `android-compile` job.
+
+---
+
 ## What's new in versionCode 12 (field-test fixes)
 
 Three defects from field testing are fixed, and nothing else changed. The grading engine (`src/engine/*`) is byte-identical to vc11.
@@ -49,7 +88,7 @@ Version: `versionCode 11` in `app.json` and as the default in the Gradle file / 
 ```bash
 npm install
 npx expo install --fix          # aligns Expo package patch versions with the SDK
-npm run verify                  # typecheck + 73 unit tests + network/privacy audit
+npm run verify                  # typecheck + 82 unit tests + network/privacy audit
 npx expo run:android            # dev build on a USB-connected phone (needs Android SDK + JDK 17)
 ```
 
@@ -95,7 +134,7 @@ The app uses a custom native module, so **it does not run in Expo Go.** Use a de
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Why the split.** Kotlin does the work that must be native and fast: capture, OCR, card detection, cropping and the overlay window. All decisions (parsing, grading, privacy, waits, storage) are pure TypeScript in `src/engine`, `src/ocr` and `src/privacy`. Those folders have no React Native imports, so they are unit-tested in plain Node (`tests/`, 73 tests).
+**Why the split.** Kotlin does the work that must be native and fast: capture, OCR, card detection, cropping and the overlay window. All decisions (parsing, grading, privacy, waits, storage) are pure TypeScript in `src/engine`, `src/ocr` and `src/privacy`. Those folders have no React Native imports, so they are unit-tested in plain Node (`tests/`, 82 tests).
 
 **Latency.** The overlay is drawn before the offer is written to SQLite, so storage and sync can never delay the verdict. Card detection runs on the full frame. Only a new card triggers the second OCR pass on the crop. Identical frames skip OCR entirely.
 
@@ -243,7 +282,7 @@ Plausibility checks include fare $2.50–$800, pickup ≤ 30 mi, and speed 3–8
 
 ## 9. What still needs on-device testing (honest list)
 
-I could not run an Android device or emulator, or compile Kotlin, in the build environment. The TypeScript engine is covered by 73 passing unit tests. The items below need checking on a real phone before rollout; CI's `android-compile` job checks the native code compiles.
+I could not run an Android device or emulator, or compile Kotlin, in the build environment. The TypeScript engine is covered by 82 passing unit tests. The items below need checking on a real phone before rollout; CI's `android-compile` job checks the native code compiles.
 
 1. **Real Uber Driver and Lyft Driver cards.** The parser was built from typical card layouts (fixtures in `tests/fixtures.ts`). Capture real cards with the app's own History → raw text view, then tune `TEMPLATES`, the fixtures and the keywords in `OfferDetector.kt`.
 2. **FLAG_SECURE.** If a driver app marks its offer screen as secure, Android returns black frames to every screen recorder and nothing can be read. Check this first. Every card would then log nothing, and there is no allowed workaround.
@@ -256,5 +295,6 @@ I could not run an Android device or emulator, or compile Kotlin, in the build e
 9. **Zero-network proof on device.** Run a shift with Sync off under PCAPdroid or Android's per-app data usage and confirm zero bytes.
 10. **The first Play upload** (manual) and the foreground-service declaration review.
 11. **On-card overlay placement** on several screen sizes for both Uber and Lyft cards: it should cover the card's top, never the Accept button, and leave when the card leaves (accept, decline, timeout).
-12. **vc12 timing on real cards.** Time card-on to verdict (target ≤ 2 s) and card-off to clear (target ≤ 0.5 s) for Uber and Lyft, both on accept, decline and timeout. If the verdict drops while the card is still up, or stays after it goes, tune `CELL_CHANGE` (40) and `GONE_FRACTION` (0.5) in `FrameProcessor.kt`.
+12. **vc13 on real cards.** Time card-appears → verdict visible (target ≤ 1 s) for Uber and Lyft. Check that Uber's ✕ and Accept work through the verdict, that the ✕ handle and swipe close it, and that accept, decline and timeout leave it up. If the locator misses a card (it falls back to the slower path), check the button colour against `MIN_SAT`/`MIN_MAX` in `CardLocator.kt`.
+12b. **vc12 timing on real cards (superseded by 12).** Time card-on to verdict (target ≤ 2 s) and card-off to clear (target ≤ 0.5 s) for Uber and Lyft, both on accept, decline and timeout. If the verdict drops while the card is still up, or stays after it goes, tune `CELL_CHANGE` (40) and `GONE_FRACTION` (0.5) in `FrameProcessor.kt`.
 13. **Arabic-script cards.** The bundled ML Kit recognizer reads Latin script only. Cards that use Western digits and Latin currency codes work; Arabic words and Arabic-Indic digits on screen will not be recognized by OCR even though the parser handles them (they work in "Try the grader" and if a future recognizer outputs them). Check a real Arabic-UI card before relying on it.

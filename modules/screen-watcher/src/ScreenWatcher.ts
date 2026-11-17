@@ -53,11 +53,18 @@ export interface OverlayPayload {
   anchorTop: number;
   anchorBottom: number;
   /**
-   * vc12: the card this verdict belongs to (from the onCard event). Native draws it only
-   * while that card is still on screen and removes it when the card closes. Omit for
-   * previews (Try the grader, Settings), which use the timer only.
+   * The card this verdict belongs to (from the onCard event). Omit for previews (Try the
+   * grader, Settings), which keep the overlay seconds timer.
+   * vc13: a live verdict (with cardSeq) stays until the driver dismisses it (✕ or swipe)
+   * or a newer card's verdict replaces it; a verdict for an older card is never drawn.
    */
   cardSeq?: number;
+  /** vc13: gross figures shown beside the net ones (src/state/grossNet.ts). */
+  grossHour?: string;
+  grossMile?: string;
+  grossHourLabel?: string;
+  grossMileLabel?: string;
+  netNote?: string;
 }
 
 interface Subscription {

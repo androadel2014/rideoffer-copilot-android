@@ -1,3 +1,4 @@
+import { grossNetFields } from './grossNet';
 import { AppState, PermissionsAndroid, Platform } from 'react-native';
 import { ScreenWatcher, parseCardLines, type CardEventPayload } from '../../modules/screen-watcher';
 import { endSession, insertOffer, insertWait, startSession } from '../db/database';
@@ -25,8 +26,6 @@ export type StartOutcome =
 const DEDUP_WINDOW_MS = 25_000;
 let initialized = false;
 let lastKey: { key: string; ts: number } | null = null;
-/** vc12: cardSeq of the last live verdict sent to native. */
-let lastShownSeq = 0;
 
 const tracker = new WaitTracker((w) => {
   const sessionId = appStore.get().sessionId;
@@ -198,9 +197,12 @@ export async function showVerdictOverlay(
   cardSeq?: number
 ): Promise<boolean> {
   if (!appStore.get().overlayAllowed && !refreshOverlayPermission()) return false;
-  const content = buildOverlay(ev.grade, ev.parsed, settingsStore.get().settings.overlay, ev.fmt, anchor);
-  // vc12: a live verdict is tied to its card, so native never draws it after the card closed.
-  return ScreenWatcher.showOverlay(cardSeq ? { ...content, cardSeq } : content);
+  const settings = settingsStore.get().settings;
+  const content = buildOverlay(ev.grade, ev.parsed, settings.overlay, ev.fmt, anchor);
+  // vc13: gross and net side by side (display only; the verdict is still graded on net).
+  const payload = { ...content, ...grossNetFields(ev.grade, settings.grading.costPerMile, ev.fmt) };
+  // cardSeq = per-card identity: native never lets an older card's verdict replace a newer one.
+  return ScreenWatcher.showOverlay(cardSeq ? { ...payload, cardSeq } : payload);
 }
 
 function dedupKey(p: ParsedOffer): string {
@@ -223,20 +225,13 @@ async function handleCard(e: CardEventPayload) {
   const anchor = cleanAnchor({ top: e.cardTop, bottom: e.cardBottom });
 
   // The same card can be re-detected after an OCR jitter; it is never logged twice.
-  // vc12: if native re-emitted it as a new on-screen card (new cardSeq), its verdict is
-  // shown again for that card; nothing else happens.
+  // vc13: and its verdict is not re-shown either. Verdicts now stay until the driver
+  // dismisses them, so a re-read must not pop back a verdict he already swiped away.
   const key = dedupKey(ev.parsed);
-  if (lastKey && lastKey.key === key && ts - lastKey.ts < DEDUP_WINDOW_MS) {
-    if (cardSeq && cardSeq !== lastShownSeq) {
-      lastShownSeq = cardSeq;
-      void showVerdictOverlay(ev, anchor, cardSeq);
-    }
-    return;
-  }
+  if (lastKey && lastKey.key === key && ts - lastKey.ts < DEDUP_WINDOW_MS) return;
   lastKey = { key, ts };
 
-  // 1) Verdict first, floating on the offer card where the native layer found it.
-  if (cardSeq) lastShownSeq = cardSeq;
+  // 1) Verdict first: drawn as soon as the card is parsed and graded, before any bookkeeping.
   void showVerdictOverlay(ev, anchor, cardSeq);
 
   // 2) Then bookkeeping.

@@ -96,3 +96,23 @@ Pickup near Fairfax
 17 min · 6.7 mi
 Dropoff near Arlington
 Match`;
+
+// --- vc13 regression: real UberX Exclusive card from the owner's field test -------------------
+
+/**
+ * Real screenshot (Nov 16 2026). The card's TOTAL line "51 min • 31.9 mi" has no label, and
+ * neither leg says "away" or "trip". It must grade on the total, not on either leg:
+ * cost 31.9 mi × $0.30 = $9.57 → net $9.49 → $11.16/hr, $0.30/mi → BAD.
+ */
+export const VC13_UBERX_EXCLUSIVE_REAL = `UberX
+Exclusive
+$19.06
+51 min • 31.9 mi
+★ 4.90
+Verified
+10 min (3.1 mi)
+Gallows Rd, Falls Church
+1 stop
+41 mins (28.8 mi)
+Aircraft Dr, Germantown
+Accept`;

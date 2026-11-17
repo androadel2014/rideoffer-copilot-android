@@ -51,6 +51,9 @@ class ScreenWatchService : Service() {
     var scaleToScreen = 1f
     var paddedBitmap: Bitmap? = null
     val alive = AtomicBoolean(true)
+    // vc13 event-driven frames (capture thread only).
+    var frameScheduled = false
+    var lastRunAt = 0L
   }
 
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -175,7 +178,10 @@ class ScreenWatchService : Service() {
     val ch = (sh * scale).toInt().coerceAtLeast(2) and 1.inv()
     val dpi = resources.displayMetrics.densityDpi
 
-    val newReader = ImageReader.newInstance(cw, ch, PixelFormat.RGBA_8888, 2)
+    val newReader = ImageReader.newInstance(cw, ch, PixelFormat.RGBA_8888, 3)
+    // vc13: event-driven. The mirror display only produces a frame when the screen changes,
+    // so a new request card is handled the moment its first frames arrive, not on a poll.
+    newReader.setOnImageAvailableListener({ onFrameAvailable(s) }, s.handler)
     val oldReader = s.reader
     if (create || s.display == null) {
       s.display = s.projection.createVirtualDisplay(
@@ -207,9 +213,25 @@ class ScreenWatchService : Service() {
 
   // --- Frame loop -------------------------------------------------------------------------
 
-  private fun frameLoop(s: Session) {
+  /**
+   * vc13: called by ImageReader as soon as the system delivers a new screen frame.
+   * Frames are handled at most every 60 ms while a card is up or arriving and every
+   * 100 ms otherwise; the newest frame is always the one handled.
+   */
+  private fun onFrameAvailable(s: Session) {
+    if (!s.alive.get() || s.frameScheduled) return
+    s.frameScheduled = true
+    val gap = if (s.processor?.fastMode == true) FAST_EVENT_GAP_MS else EVENT_GAP_MS
+    val wait = (s.lastRunAt + gap - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+    s.handler.postDelayed({
+      s.frameScheduled = false
+      runFrame(s)
+    }, wait)
+  }
+
+  private fun runFrame(s: Session) {
     if (!s.alive.get()) return
-    val started = SystemClock.uptimeMillis()
+    s.lastRunAt = SystemClock.uptimeMillis()
     try {
       val bitmap = grabFrame(s)
       if (bitmap != null) {
@@ -220,13 +242,14 @@ class ScreenWatchService : Service() {
     } catch (t: Throwable) {
       Log.w(TAG, "frame failed: ${t.message}")
     }
+  }
+
+  /** Safety net only (vc13): picks up a frame if an availability event was ever missed. */
+  private fun frameLoop(s: Session) {
     if (!s.alive.get()) return
-    val elapsed = SystemClock.uptimeMillis() - started
-    // vc12: while an offer card is up (or sliding in), poll fast so its verdict appears
-    // quickly and is removed within ~0.5 s of the card closing. Idle cadence unchanged.
-    val interval = if (s.processor?.fastMode == true) FAST_FRAME_INTERVAL_MS else FRAME_INTERVAL_MS
-    val delay = (interval - elapsed).coerceAtLeast(MIN_GAP_MS)
-    s.handler.postDelayed({ frameLoop(s) }, delay)
+    if (!s.frameScheduled && SystemClock.uptimeMillis() - s.lastRunAt >= FRAME_INTERVAL_MS) runFrame(s)
+    if (!s.alive.get()) return
+    s.handler.postDelayed({ frameLoop(s) }, FRAME_INTERVAL_MS)
   }
 
   /** Returns a bitmap exactly captureWidth x captureHeight, or null if no new frame. */
@@ -357,7 +380,7 @@ class ScreenWatchService : Service() {
     private const val NOTIFICATION_ID = 4711
     private const val MAX_CAPTURE_SHORT_EDGE = 1080f
     private const val FRAME_INTERVAL_MS = 600L
-    private const val MIN_GAP_MS = 120L
-    private const val FAST_FRAME_INTERVAL_MS = 150L
+    private const val EVENT_GAP_MS = 100L
+    private const val FAST_EVENT_GAP_MS = 60L
   }
 }

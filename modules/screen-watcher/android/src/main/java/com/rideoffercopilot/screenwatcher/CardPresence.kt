@@ -3,12 +3,18 @@ package com.rideoffercopilot.screenwatcher
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Which offer card is on screen right now (vc12).
+ * Per-card verdict identity (vc12, revised in vc13).
  *
  * Every card the capture loop emits gets a sequence number (`cardSeq`), and JS sends it
- * back with the verdict. The overlay is drawn only while that card is still the active
- * one, so a verdict can never show up after its card has closed. When the capture loop
- * sees the card go, it ends the sequence and the overlay is removed straight away.
+ * back with the verdict.
+ *
+ * vc13: the verdict is no longer tied to the card being on screen. Once drawn, it stays
+ * until the driver dismisses it. The identity rule is now only "newest card wins": a
+ * verdict whose card is older than the newest emitted card is never drawn, so a slow
+ * verdict can never replace a newer card's verdict.
+ *
+ * `activeSeq` still tracks whether the card is on screen. The capture loop uses it only
+ * to know when the next card is new. It no longer clears the overlay.
  *
  * Written from the capture thread, read from the main thread.
  */
@@ -31,7 +37,8 @@ internal object CardPresence {
     if (activeSeq == seq) activeSeq = 0L
   }
 
-  fun isActive(seq: Long): Boolean = seq != 0L && seq == activeSeq
+  /** True when no newer card has been emitted since this one. */
+  fun isLatest(seq: Long): Boolean = seq != 0L && seq == counter.get()
 
   fun reset() {
     activeSeq = 0L

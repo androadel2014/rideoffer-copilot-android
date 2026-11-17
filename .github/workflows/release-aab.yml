@@ -59,7 +59,7 @@ jobs:
       - name: Build signed AAB
         working-directory: android
         env:
-          ROC_VERSION_CODE: "12"
+          ROC_VERSION_CODE: "13"
           ROC_UPLOAD_STORE_FILE: ${{ runner.temp }}/upload.jks
           ROC_UPLOAD_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           ROC_UPLOAD_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
