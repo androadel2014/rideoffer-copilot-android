@@ -1,0 +1,37 @@
+{
+  "name": "rideoffer-copilot",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "android": "expo run:android",
+    "prebuild": "expo prebuild --platform android --clean",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node scripts/run-tests.mjs",
+    "audit:network": "node scripts/audit-network.mjs",
+    "verify": "npm run typecheck && npm test && npm run audit:network",
+    "build:aab": "eas build --platform android --profile production",
+    "build:apk": "eas build --platform android --profile preview",
+    "submit:internal": "eas submit --platform android --profile production --latest",
+    "ios": "expo run:ios"
+  },
+  "dependencies": {
+    "babel-preset-expo": "~54.0.10",
+    "expo": "~54.0.0",
+    "expo-build-properties": "~1.0.9",
+    "expo-file-system": "~19.0.17",
+    "expo-sharing": "~14.0.7",
+    "expo-splash-screen": "~31.0.10",
+    "expo-sqlite": "~16.0.8",
+    "expo-status-bar": "~3.0.8",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-safe-area-context": "~5.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "~19.1.10",
+    "typescript": "~5.9.2"
+  }
+}

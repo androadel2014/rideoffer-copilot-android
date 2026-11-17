@@ -1,6 +1,10 @@
-.gradle/
-.idea/
-local.properties
-**/build/
-*.iml
-.DS_Store
+node_modules/
+.expo/
+/android/
+ios/
+dist/
+.test-build/
+*.jks
+*.keystore
+google-service-account.json
+npm-debug.log*

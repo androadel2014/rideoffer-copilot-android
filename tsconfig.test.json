@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "node16",
+    "moduleResolution": "node16",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": ".test-build",
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["src/engine/**/*.ts", "src/ocr/**/*.ts", "src/privacy/**/*.ts", "src/config/**/*.ts", "src/net/**/*.ts", "src/export/format.ts", "src/sync/payload.ts", "tests/**/*.ts"]
+}
