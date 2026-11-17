@@ -24,6 +24,10 @@ import androidx.core.widget.TextViewCompat
  * - Not focusable and not touchable: every tap passes straight through to the driver
  *   app underneath, so the overlay can never block the Accept button.
  * - Auto-dismisses after durationMs.
+ * - vc12: a live verdict carries the `cardSeq` of its offer card. It is drawn only while
+ *   that card is still on screen (CardPresence), and removed as soon as the capture loop
+ *   sees the card go (hideForCard). Previews from the app (no cardSeq) are unchanged.
+ * - vc12: shows the rider's star rating ("★ 4.94") next to the verdict.
  * - Publishes its on-screen rectangle so the OCR loop can ignore its own text.
  */
 internal object OverlayController {
@@ -33,6 +37,9 @@ internal object OverlayController {
   private val hideRunnable = Runnable { hideNow() }
   private val clearRectRunnable = Runnable { screenRect = null }
 
+  /** cardSeq of the verdict on screen; 0 for a preview or when nothing is shown. */
+  private var shownSeq = 0L
+
   @Volatile
   private var screenRect: Rect? = null
 
@@ -41,6 +48,9 @@ internal object OverlayController {
   fun show(ctx: Context, p: Map<String, Any?>): Boolean {
     val allowed = try { Settings.canDrawOverlays(ctx) } catch (_: Throwable) { false }
     if (!allowed) return false
+    val seq = (p["cardSeq"] as? Number)?.toLong() ?: 0L
+    // A verdict whose card has already closed (or been replaced) is never drawn.
+    if (seq != 0L && !CardPresence.isActive(seq)) return false
     if (Looper.myLooper() != Looper.getMainLooper()) {
       main.post { show(ctx, p) }
       return true
@@ -116,6 +126,25 @@ internal object OverlayController {
           setPadding(dp(12), 0, 0, 0)
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
       }
+      // vc12: rider rating chip, e.g. "★ 4.94" (omitted when the card shows no rating).
+      val ratingText = (p["rating"] as? String) ?: ""
+      if (ratingText.isNotBlank()) {
+        support.addView(TextView(ctx).apply {
+          text = ratingText
+          setTextColor(fg)
+          setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+          typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
+          includeFontPadding = false
+          maxLines = 1
+          setPadding(dp(10), dp(6), dp(10), dp(6))
+          background = GradientDrawable().apply {
+            cornerRadius = dp(10).toFloat()
+            setColor(Color.argb(40, Color.red(fg), Color.green(fg), Color.blue(fg)))
+          }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+          marginStart = dp(10)
+        })
+      }
       root.addView(support)
 
       // 3) Optional flags.
@@ -167,6 +196,12 @@ internal object OverlayController {
       }
       view = root
       windowManager = wm
+      shownSeq = seq
+      // The card may have closed while this was being laid out.
+      if (seq != 0L && !CardPresence.isActive(seq)) {
+        hideNow()
+        return false
+      }
 
       val duration = ((p["durationMs"] as? Number)?.toLong() ?: 6000L).coerceIn(1500L, 30000L)
       main.postDelayed(hideRunnable, duration)
@@ -185,8 +220,16 @@ internal object OverlayController {
     }
   }
 
+  /** vc12: the offer card with this sequence number left the screen. Called from the capture thread. */
+  fun hideForCard(seq: Long) {
+    if (seq == 0L) return
+    val run = Runnable { if (shownSeq == seq) hideNow() }
+    if (Looper.myLooper() == Looper.getMainLooper()) run.run() else main.postAtFrontOfQueue(run)
+  }
+
   private fun hideNow() {
     main.removeCallbacks(hideRunnable)
+    shownSeq = 0L
     val v = view
     val wm = windowManager
     view = null

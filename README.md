@@ -8,6 +8,28 @@ A copilot for Uber/Lyft drivers in the DC metro. Tap **Start Watching** before g
 
 ---
 
+## What's new in versionCode 12 (field-test fixes)
+
+Three defects from field testing are fixed, and nothing else changed. The grading engine (`src/engine/*`) is byte-identical to vc11.
+
+1. **Verdict timing: shown while the card is up, gone when it goes.**
+   *Root cause, in the code:* the native layer had no idea whether the offer card was still on screen. The verdict lived on a fixed timer (`durationMs`) that had nothing to do with the card. Nothing stopped a verdict that reached the overlay late from being drawn after its card had closed. Detection also waited on the 600 ms cadence and the static-frame skip (up to 2.5 s) even when a card was half-way in.
+   *Fix:*
+   - Every emitted card gets a `cardSeq` (`CardPresence.kt`). JS sends it back with the verdict, and `OverlayController` draws a verdict only while that card is still the active one.
+   - While a card is up, frames are grabbed every 150 ms and compared with a luminance snapshot of the card's box (no OCR; our own overlay area is excluded). When most of the box changes, the card is gone: its verdict is removed at once (`hideForCard`, posted to the front of the main queue), and the next frame is read for a new card. The design target is 150 to 300 ms from card to clear. This has not been measured on a phone yet (see §9).
+   - While a card is up, OCR only re-confirms it every 3 s (by its lower part: Accept/Match or a time+distance line), so OCR cannot hold up the gone-check.
+   - A card that is still sliding in (fare plus a metric or Accept already readable) is read again on the next frame, without waiting for the normal cadence.
+   - A card caught mid-slide-out is not re-emitted for 1.5 s, so the verdict does not flash back.
+   - If native re-emits a card JS has already logged (for example after a false "gone"), its verdict is shown again for the new `cardSeq`. It is still never logged twice.
+   - The idle cadence (600 ms) and the overlay seconds setting are unchanged. Previews (Try the grader, Settings) have no `cardSeq` and behave as before.
+2. **Double-counted trip (parser).** A total line that OCR does not label "Total" on the same line (`22 min / 7.8 mi`) was taken for the pickup leg, so the trip was added on top of it (graded 39 min / 14.5 mi). `inferTotalLine()` in `src/ocr/parser.ts` now recognises the total line when (1) "Total" is on its own line next to it, (2) it equals pickup + trip, (3) both legs are labelled and it is the remaining line, or (4) it sits above a labelled trip line and is longer than that trip, with a believable pickup left over. The legs are then read normally, and a missing leg is filled from total − other leg. Every existing card parses exactly as before.
+   *Regression fixture* `VC12_TOTAL_LINE_CARD` (`tests/fixtures.ts`, tests in `tests/v12.test.ts`): it grades on 22 min / 7.8 mi, net $5.79, $15.79/hr ($15.8 stored to 0.1, "$16/hr" on the overlay), $0.74/mi → **BAD**. Three OCR variants of the same card grade the same way.
+3. **Rider rating on the overlay.** JS already sent `rating` ("★ 4.94"), but `OverlayController.kt` never drew it. It is now a chip next to the verdict pill, and it is left out when the card shows no rating.
+
+Version: `versionCode 12` in `app.json` and as the signing-plugin default. Tests: 73 (66 from vc11 + 7 new).
+
+---
+
 ## What's new in versionCode 11
 
 1. **Verdict floats on the offer card.** The native layer already reports where the card sits on screen (`cardTop`/`cardBottom`); the overlay now anchors to the card's top edge, keeps the bottom ~84 dp (Accept) uncovered, and sits just above a card that is too short. While it covers the fare, the card is tracked by its lower part, and the verdict disappears as soon as the card does. Settings → Overlay → Position: **On the offer** (new default), Top, Middle. Drivers who had the old default "Top" are moved to "On the offer" once; "Middle" is kept.
@@ -27,7 +49,7 @@ Version: `versionCode 11` in `app.json` and as the default in the Gradle file / 
 ```bash
 npm install
 npx expo install --fix          # aligns Expo package patch versions with the SDK
-npm run verify                  # typecheck + 66 unit tests + network/privacy audit
+npm run verify                  # typecheck + 73 unit tests + network/privacy audit
 npx expo run:android            # dev build on a USB-connected phone (needs Android SDK + JDK 17)
 ```
 
@@ -73,7 +95,7 @@ The app uses a custom native module, so **it does not run in Expo Go.** Use a de
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Why the split.** Kotlin does the work that must be native and fast: capture, OCR, card detection, cropping and the overlay window. All decisions (parsing, grading, privacy, waits, storage) are pure TypeScript in `src/engine`, `src/ocr` and `src/privacy`. Those folders have no React Native imports, so they are unit-tested in plain Node (`tests/`, 66 tests).
+**Why the split.** Kotlin does the work that must be native and fast: capture, OCR, card detection, cropping and the overlay window. All decisions (parsing, grading, privacy, waits, storage) are pure TypeScript in `src/engine`, `src/ocr` and `src/privacy`. Those folders have no React Native imports, so they are unit-tested in plain Node (`tests/`, 73 tests).
 
 **Latency.** The overlay is drawn before the offer is written to SQLite, so storage and sync can never delay the verdict. Card detection runs on the full frame. Only a new card triggers the second OCR pass on the crop. Identical frames skip OCR entirely.
 
@@ -221,7 +243,7 @@ Plausibility checks include fare $2.50–$800, pickup ≤ 30 mi, and speed 3–8
 
 ## 9. What still needs on-device testing (honest list)
 
-I could not run an Android device or emulator, or compile Kotlin, in the build environment. The TypeScript engine is covered by 66 passing unit tests. The items below need checking on a real phone before rollout; CI's `android-compile` job checks the native code compiles.
+I could not run an Android device or emulator, or compile Kotlin, in the build environment. The TypeScript engine is covered by 73 passing unit tests. The items below need checking on a real phone before rollout; CI's `android-compile` job checks the native code compiles.
 
 1. **Real Uber Driver and Lyft Driver cards.** The parser was built from typical card layouts (fixtures in `tests/fixtures.ts`). Capture real cards with the app's own History → raw text view, then tune `TEMPLATES`, the fixtures and the keywords in `OfferDetector.kt`.
 2. **FLAG_SECURE.** If a driver app marks its offer screen as secure, Android returns black frames to every screen recorder and nothing can be read. Check this first. Every card would then log nothing, and there is no allowed workaround.
@@ -234,4 +256,5 @@ I could not run an Android device or emulator, or compile Kotlin, in the build e
 9. **Zero-network proof on device.** Run a shift with Sync off under PCAPdroid or Android's per-app data usage and confirm zero bytes.
 10. **The first Play upload** (manual) and the foreground-service declaration review.
 11. **On-card overlay placement** on several screen sizes for both Uber and Lyft cards: it should cover the card's top, never the Accept button, and leave when the card leaves (accept, decline, timeout).
-12. **Arabic-script cards.** The bundled ML Kit recognizer reads Latin script only. Cards that use Western digits and Latin currency codes work; Arabic words and Arabic-Indic digits on screen will not be recognized by OCR even though the parser handles them (they work in "Try the grader" and if a future recognizer outputs them). Check a real Arabic-UI card before relying on it.
+12. **vc12 timing on real cards.** Time card-on to verdict (target ≤ 2 s) and card-off to clear (target ≤ 0.5 s) for Uber and Lyft, both on accept, decline and timeout. If the verdict drops while the card is still up, or stays after it goes, tune `CELL_CHANGE` (40) and `GONE_FRACTION` (0.5) in `FrameProcessor.kt`.
+13. **Arabic-script cards.** The bundled ML Kit recognizer reads Latin script only. Cards that use Western digits and Latin currency codes work; Arabic words and Arabic-Indic digits on screen will not be recognized by OCR even though the parser handles them (they work in "Try the grader" and if a future recognizer outputs them). Check a real Arabic-UI card before relying on it.

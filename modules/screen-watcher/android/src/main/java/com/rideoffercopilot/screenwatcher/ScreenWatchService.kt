@@ -222,7 +222,10 @@ class ScreenWatchService : Service() {
     }
     if (!s.alive.get()) return
     val elapsed = SystemClock.uptimeMillis() - started
-    val delay = (FRAME_INTERVAL_MS - elapsed).coerceAtLeast(MIN_GAP_MS)
+    // vc12: while an offer card is up (or sliding in), poll fast so its verdict appears
+    // quickly and is removed within ~0.5 s of the card closing. Idle cadence unchanged.
+    val interval = if (s.processor?.fastMode == true) FAST_FRAME_INTERVAL_MS else FRAME_INTERVAL_MS
+    val delay = (interval - elapsed).coerceAtLeast(MIN_GAP_MS)
     s.handler.postDelayed({ frameLoop(s) }, delay)
   }
 
@@ -275,6 +278,7 @@ class ScreenWatchService : Service() {
     if (s != null) teardown(s)
     val wasRunning = WatchBus.isRunning
     WatchBus.isRunning = false
+    CardPresence.reset()
     OverlayController.hide()
     WatchBus.completeStart(false, "stopped")
     if (wasRunning || s != null) {
@@ -354,5 +358,6 @@ class ScreenWatchService : Service() {
     private const val MAX_CAPTURE_SHORT_EDGE = 1080f
     private const val FRAME_INTERVAL_MS = 600L
     private const val MIN_GAP_MS = 120L
+    private const val FAST_FRAME_INTERVAL_MS = 150L
   }
 }

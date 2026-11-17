@@ -18,6 +18,8 @@ export interface CardEventPayload {
   frameWidth: number;
   frameHeight: number;
   pass: 'crop' | 'frame';
+  /** vc12: sequence number of this card on screen. Send it back with the verdict. */
+  cardSeq?: number;
 }
 
 export type ScreenState = 'started' | 'offer' | 'trip' | 'idle' | 'other';
@@ -50,6 +52,12 @@ export interface OverlayPayload {
   /** Offer-card edges as fractions of the screen height; −1 when unknown. */
   anchorTop: number;
   anchorBottom: number;
+  /**
+   * vc12: the card this verdict belongs to (from the onCard event). Native draws it only
+   * while that card is still on screen and removes it when the card closes. Omit for
+   * previews (Try the grader, Settings), which use the timer only.
+   */
+  cardSeq?: number;
 }
 
 interface Subscription {

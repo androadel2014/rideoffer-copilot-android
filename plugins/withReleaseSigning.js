@@ -38,7 +38,7 @@ module.exports = function withReleaseSigning(config) {
     if (!g.includes('rocVersionCode =')) {
       g = g.replace(
         /(^|\n)android\s*\{/,
-        `$1def rocVersionCode = (System.getenv("ROC_VERSION_CODE") ?: "11").toInteger()\nandroid {`
+        `$1def rocVersionCode = (System.getenv("ROC_VERSION_CODE") ?: "12").toInteger()\nandroid {`
       );
     }
     cfg.modResults.contents = g;

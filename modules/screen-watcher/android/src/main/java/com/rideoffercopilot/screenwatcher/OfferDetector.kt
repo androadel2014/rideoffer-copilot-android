@@ -81,6 +81,27 @@ internal object OfferDetector {
     return DetectedCard(Rect(0, top, width, bottom), signature, fareKey)
   }
 
+  /**
+   * vc12: a card that is still sliding in (fare plus a metric or the Accept button is
+   * already readable, but detect() does not pass yet). The next frame is read quickly
+   * instead of waiting for the normal cadence.
+   */
+  fun looksPartial(lines: List<OcrLine>): Boolean {
+    if (lines.none { FARE.containsMatchIn(it.text) }) return false
+    return lines.any { ACCEPT.containsMatchIn(it.text) || (isTimeLike(it.text) && MI.containsMatchIn(it.text)) }
+  }
+
+  /**
+   * vc12: is the card that was emitted still on screen? The overlay may cover the fare
+   * (its text is excluded from OCR), so the card is tracked by its lower part: the
+   * Accept/Match button or a time + distance line inside the card's box.
+   */
+  fun stillShowsCard(lines: List<OcrLine>, card: Rect): Boolean =
+    lines.any { l ->
+      Rect.intersects(card, l.rect) &&
+        (ACCEPT.containsMatchIn(l.text) || (isTimeLike(l.text) && MI.containsMatchIn(l.text)) || FARE.containsMatchIn(l.text))
+    }
+
   fun classifyState(lines: List<OcrLine>): String {
     if (lines.isEmpty()) return "other"
     val text = lines.joinToString(" ") { it.text }.lowercase()

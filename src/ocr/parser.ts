@@ -29,6 +29,8 @@ interface Line {
   y: number;
   h: number;
   cy: number;
+  /** The card's TOTAL (whole job) line: labelled "Total", or recognised by inferTotalLine(). */
+  total: boolean;
 }
 
 export interface Region {
@@ -356,7 +358,7 @@ interface Extract {
   totalMin: number | null;
 }
 
-const isTotalLine = (l: Line) => TOTAL_WORDS.test(l.text);
+const isTotalLine = (l: Line) => l.total;
 
 function readTotal(lines: Line[]): Metric | null {
   for (const l of lines) {
@@ -413,10 +415,11 @@ function fallbackRead(lines: Line[]): Extract {
   const found: Found[] = [];
   for (const l of lines) {
     for (const m of metricPairs(l.text)) {
-      const kind = PICKUP_WORDS.test(l.text)
-        ? 'pickup'
-        : TOTAL_WORDS.test(l.text)
-          ? 'total'
+      // The total line is checked first: it is the whole job and never a leg.
+      const kind = l.total
+        ? 'total'
+        : PICKUP_WORDS.test(l.text)
+          ? 'pickup'
           : TRIP_WORDS.test(l.text)
             ? 'trip'
             : 'unknown';
@@ -461,6 +464,89 @@ function fallbackRead(lines: Line[]): Extract {
   };
 }
 
+/**
+ * Finds the card's TOTAL line when OCR did not put the word "Total" on it (vc12 fix).
+ *
+ * The total line is the whole job (pickup + trip) exactly as the card shows it. If it is
+ * mistaken for the pickup leg, the trip gets added on top of it a second time
+ * ("22 min / 7.8 mi" total + "17 min (6.7 mi) trip" graded as 39 min / 14.5 mi).
+ * A metric line is the total when:
+ *   1. a line that only says "Total" sits right above it (or right below it), or
+ *   2. it equals the sum of two other metric lines (pickup + trip), or
+ *   3. the card also has a labelled pickup ("away") AND a labelled trip line, so this
+ *      unlabelled line can only be the total, or
+ *   4. it is the only other metric line, sits above a labelled trip line and is longer
+ *      than that trip in both time and distance, with a believable pickup left over.
+ * At most one line is marked. Lines already labelled "Total" are left as they are.
+ */
+function inferTotalLine(lines: Line[]): void {
+  if (lines.some((l) => l.total && metricPairs(l.text).length > 0)) return;
+  type M = { line: Line; min: number; mi: number };
+  const metrics: M[] = [];
+  for (const l of lines) {
+    const p = metricPairs(l.text)[0];
+    if (p && p.min != null && p.mi != null) metrics.push({ line: l, min: p.min, mi: p.mi });
+  }
+  if (metrics.length < 2) return;
+  const mark = (m: M) => {
+    m.line.total = true;
+  };
+  const says = (re: RegExp, m: M) => re.test(m.line.text);
+  const unlabelled = (m: M) => !says(PICKUP_WORDS, m) && !says(TRIP_WORDS, m);
+
+  // 1) "Total" printed as its own line next to the numbers.
+  for (const label of lines) {
+    if (!TOTAL_WORDS.test(label.text) || metricPairs(label.text).length > 0) continue;
+    if (label.text.trim().split(/\s+/).length > 3) continue;
+    const next = metrics.find((m) => m.line.idx === label.idx + 1);
+    const prev = metrics.find((m) => m.line.idx === label.idx - 1);
+    const hit = (next && unlabelled(next) ? next : null) ?? (prev && unlabelled(prev) ? prev : null) ?? next ?? null;
+    if (hit) return mark(hit);
+  }
+
+  // 2) One line is the sum of two others.
+  const sumMatch = (c: M, a: M, b: M) =>
+    Math.abs(c.min - (a.min + b.min)) <= 1 && Math.abs(c.mi - (a.mi + b.mi)) <= Math.max(0.15, 0.02 * c.mi);
+  if (metrics.length >= 3) {
+    for (const c of metrics) {
+      const others = metrics.filter((m) => m !== c);
+      for (let i = 0; i < others.length; i++) {
+        for (let j = i + 1; j < others.length; j++) {
+          if (sumMatch(c, others[i], others[j])) return mark(c);
+        }
+      }
+    }
+  }
+
+  const free = metrics.filter(unlabelled);
+  const pickups = metrics.filter((m) => says(PICKUP_WORDS, m) && !says(TRIP_WORDS, m));
+  const trips = metrics.filter((m) => says(TRIP_WORDS, m) && !says(PICKUP_WORDS, m));
+
+  // 3) Both legs are labelled; the remaining unlabelled line is the total.
+  if (pickups.length >= 1 && trips.length >= 1 && free.length === 1) {
+    const u = free[0];
+    if (u.min >= trips[0].min && u.mi >= trips[0].mi) return mark(u);
+  }
+
+  // 4) Total + labelled trip only: the unlabelled line above the trip is longer than it.
+  if (metrics.length === 2 && free.length === 1 && trips.length === 1) {
+    const u = free[0];
+    const t = trips[0];
+    const leftMin = u.min - t.min;
+    const leftMi = u.mi - t.mi;
+    if (
+      u.line.idx < t.line.idx &&
+      leftMin > 0 &&
+      leftMi > 0 &&
+      plausible.pickupMin(leftMin) &&
+      plausible.pickupMi(leftMi) &&
+      plausible.speed(leftMi, leftMin, 1, 75)
+    ) {
+      return mark(u);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------------------
@@ -490,7 +576,9 @@ export function parseCard(input: CardInput, opts?: ParseOptions): ParsedOffer {
     y: l.y,
     h: l.h,
     cy: l.y + l.h / 2,
+    total: TOTAL_WORDS.test(sanitized[idx]),
   }));
+  inferTotalLine(lines);
   const fullText = lines.map((l) => l.text).join('\n');
   dollarCurrency = opts?.dollarCurrency ?? 'USD';
   const currency = detectCurrency(

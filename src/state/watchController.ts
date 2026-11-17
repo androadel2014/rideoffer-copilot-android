@@ -25,6 +25,8 @@ export type StartOutcome =
 const DEDUP_WINDOW_MS = 25_000;
 let initialized = false;
 let lastKey: { key: string; ts: number } | null = null;
+/** vc12: cardSeq of the last live verdict sent to native. */
+let lastShownSeq = 0;
 
 const tracker = new WaitTracker((w) => {
   const sessionId = appStore.get().sessionId;
@@ -190,10 +192,15 @@ export function evaluateParsed(parsed: ParsedOffer): Evaluation {
  * Shows the verdict over the driver app. With a card anchor (where the offer card sits on
  * screen) and the default "card" position, it floats on top of the offer card itself.
  */
-export async function showVerdictOverlay(ev: Evaluation, anchor?: OverlayAnchor | null): Promise<boolean> {
+export async function showVerdictOverlay(
+  ev: Evaluation,
+  anchor?: OverlayAnchor | null,
+  cardSeq?: number
+): Promise<boolean> {
   if (!appStore.get().overlayAllowed && !refreshOverlayPermission()) return false;
   const content = buildOverlay(ev.grade, ev.parsed, settingsStore.get().settings.overlay, ev.fmt, anchor);
-  return ScreenWatcher.showOverlay(content);
+  // vc12: a live verdict is tied to its card, so native never draws it after the card closed.
+  return ScreenWatcher.showOverlay(cardSeq ? { ...content, cardSeq } : content);
 }
 
 function dedupKey(p: ParsedOffer): string {
@@ -212,13 +219,25 @@ async function handleCard(e: CardEventPayload) {
     return;
   }
 
-  // The same card can be re-detected after an OCR jitter; ignore duplicates.
+  const cardSeq = Number(e.cardSeq) > 0 ? Number(e.cardSeq) : undefined;
+  const anchor = cleanAnchor({ top: e.cardTop, bottom: e.cardBottom });
+
+  // The same card can be re-detected after an OCR jitter; it is never logged twice.
+  // vc12: if native re-emitted it as a new on-screen card (new cardSeq), its verdict is
+  // shown again for that card; nothing else happens.
   const key = dedupKey(ev.parsed);
-  if (lastKey && lastKey.key === key && ts - lastKey.ts < DEDUP_WINDOW_MS) return;
+  if (lastKey && lastKey.key === key && ts - lastKey.ts < DEDUP_WINDOW_MS) {
+    if (cardSeq && cardSeq !== lastShownSeq) {
+      lastShownSeq = cardSeq;
+      void showVerdictOverlay(ev, anchor, cardSeq);
+    }
+    return;
+  }
   lastKey = { key, ts };
 
   // 1) Verdict first, floating on the offer card where the native layer found it.
-  void showVerdictOverlay(ev, cleanAnchor({ top: e.cardTop, bottom: e.cardBottom }));
+  if (cardSeq) lastShownSeq = cardSeq;
+  void showVerdictOverlay(ev, anchor, cardSeq);
 
   // 2) Then bookkeeping.
   tracker.offer(ts, ev.parsed.dropoffArea);
